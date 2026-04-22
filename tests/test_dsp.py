@@ -159,3 +159,35 @@ class TestFindEndOfPreamble:
             threshold=threshold, n_preamble_bits=40,
         )
         assert result is None
+
+
+class TestDecodeUartByte:
+    def test_decode_ascii_A(self, frames_per_bit):
+        # 'A' = 0x41 = 01000001 binary; LSB-first: 1,0,0,0,0,0,1,0
+        bits = uart_bits_for_byte(0x41)  # start(0), data, stop(1)
+        signal = synth_signal_from_bits(
+            bits, frames_per_bit=frames_per_bit,
+            high=200.0, low=50.0, noise_std=1.0,
+        )
+        threshold = dsp.compute_threshold(signal).threshold
+        start_center = 0 * frames_per_bit + frames_per_bit // 2
+        value, next_center = dsp.decode_uart_byte(
+            signal, start_bit_center=start_center,
+            bit_time_frames=float(frames_per_bit), threshold=threshold,
+        )
+        assert value == 0x41
+        # next byte's start bit is 10 bits after this one's start center
+        assert abs(next_center - (start_center + 10 * frames_per_bit)) <= 1
+
+    def test_decode_zero_byte(self, frames_per_bit):
+        bits = uart_bits_for_byte(0x00)
+        signal = synth_signal_from_bits(
+            bits, frames_per_bit=frames_per_bit, high=200.0, low=50.0,
+        )
+        threshold = dsp.compute_threshold(signal).threshold
+        start_center = frames_per_bit // 2
+        value, _ = dsp.decode_uart_byte(
+            signal, start_bit_center=start_center,
+            bit_time_frames=float(frames_per_bit), threshold=threshold,
+        )
+        assert value == 0x00

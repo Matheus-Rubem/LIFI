@@ -137,3 +137,38 @@ def find_end_of_preamble(
             return int(round(bit_center(n - 1)))
         prev = current
         n += 1
+
+
+def decode_uart_byte(
+    signal: np.ndarray,
+    start_bit_center: int,
+    bit_time_frames: float,
+    threshold: float,
+) -> tuple[int | None, int]:
+    """Decode one UART-framed byte starting at `start_bit_center`.
+
+    Layout: start(0), 8 data LSB-first, stop(1). Returns (byte_value, next_start_center).
+    byte_value is None if framing is invalid (start != 0 or stop != 1).
+    """
+    # Sanity check start bit
+    start = _sample_bit(signal, start_bit_center, threshold)
+    if start != 0:
+        next_center = int(round(start_bit_center + 10 * bit_time_frames))
+        return None, next_center
+
+    byte = 0
+    for i in range(8):
+        center = start_bit_center + (i + 1) * bit_time_frames
+        bit = _sample_bit(signal, center, threshold)
+        if bit is None:
+            next_center = int(round(start_bit_center + 10 * bit_time_frames))
+            return None, next_center
+        byte |= (bit & 1) << i  # LSB first
+
+    # Stop bit must be 1
+    stop_center = start_bit_center + 9 * bit_time_frames
+    stop = _sample_bit(signal, stop_center, threshold)
+    next_center = int(round(start_bit_center + 10 * bit_time_frames))
+    if stop != 1:
+        return None, next_center
+    return byte, next_center
