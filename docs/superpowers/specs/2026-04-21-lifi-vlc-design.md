@@ -17,9 +17,10 @@ Construir um link de comunicação unidirecional em luz visível: um Arduino pis
 
 1. Transmitir texto ASCII arbitrário (até 120 bytes) digitado em tempo real pelo operador.
 2. Decodificar na outra ponta com validação de integridade (CRC-8).
-3. Apresentar três janelas simultâneas: frame bruto, máscara pós-filtros, gráfico do sinal 1D com bits decodificados.
-4. Reportar BER instantânea e acumulada na demo.
-5. Amarrar cada bloco do sistema a um conceito explícito de PCOM.
+3. Suportar **duas fontes de TX intercambiáveis** com o mesmo protocolo óptico: Arduino + LED colorido (primário, timing determinístico) e lanterna de celular Android via Termux (secundário, demonstra portabilidade da PHY).
+4. Apresentar três janelas simultâneas: frame bruto, máscara pós-filtros, gráfico do sinal 1D com bits decodificados.
+5. Reportar BER instantânea e acumulada na demo.
+6. Amarrar cada bloco do sistema a um conceito explícito de PCOM.
 
 ### Fora de escopo
 
@@ -31,30 +32,65 @@ Construir um link de comunicação unidirecional em luz visível: um Arduino pis
 
 ## 2. Arquitetura de alto nível
 
+O sistema tem **duas caminhos de TX intercambiáveis** (mesmo protocolo óptico) e **um único RX com duas modalidades de filtragem** escolhidas por flag de linha de comando:
+
+### Caminho TX primário — Arduino + LED colorido
+
 ```
 ┌─────────────────────┐     Serial USB     ┌─────────────────┐
 │   HOST-TX (Python)  │ ─────────────────▶ │  ARDUINO (TX)   │
-│                     │                     │                 │
+│   (notebook)        │                     │                 │
 │ • Lê input() do     │                     │ • Recebe bytes  │
 │   teclado           │                     │   via UART      │
 │ • Monta o quadro    │                     │ • Empurra bits  │
 │ • Envia bytes       │                     │   para o LED    │
 │   serializados      │                     │   (Timer1 ISR)  │
 └─────────────────────┘                     └────────┬────────┘
-                                                     │
+                                                     │ verde/azul
                                                      ▼
+```
+
+### Caminho TX alternativo — Celular via Termux
+
+```
+┌─────────────────────────────────────────────┐
+│  TX-PHONE (Termux, shell script)            │
+│                                             │
+│ • Recebe quadro já montado (como arquivo    │
+│   ou via stdin) — mesma montagem do         │
+│   HOST-TX Python                            │
+│ • Loop que, para cada bit, executa          │
+│   `termux-torch on` ou `termux-torch off`   │
+│   com `sleep 0.2` entre chamadas            │
+└────────────────────┬────────────────────────┘
+                     │ branco (espectro visível total)
+                     ▼
+```
+
+Os dois caminhos emitem o mesmo enquadramento óptico (Seção 3). A diferença:
+- **Arduino/LED colorido**: timing determinístico (Timer1 ISR com jitter < 1 ms), luz com matiz específico (verde ou azul).
+- **Celular/lanterna**: luz branca com alto V e baixo S, timing com jitter de OS (~10-50 ms esperado). Absorvido pelo `Tb_medido` estimado no preamble.
+
+### Receptor comum
+
+```
                                              ╔═══════════════╗
-                                             ║ LED (canal    ║
-                                             ║ óptico VLC)   ║
+                                             ║ LED ou        ║
+                                             ║ Lanterna      ║
+                                             ║ (canal óptico)║
                                              ╚═══════╤═══════╝
                                                      │ luz
                                                      ▼
 ┌───────────────────────────────────────────────────────────┐
-│                 HOST-RX (Python + OpenCV)                 │
+│          HOST-RX (Python + OpenCV, `rx.py`)               │
+│                                                           │
+│ Flag: --mode {color|white} (padrão: color)                │
 │                                                           │
 │ 1. Captura de frame (webcam, 30 fps)                      │
-│ 2. Pré-processamento: HSV → morfologia → ROI              │
-│ 3. Extração de sinal 1D (média de brilho na ROI)          │
+│ 2. Pré-processamento por MODO:                            │
+│      color: HSV matiz (verde/azul) + morfologia → ROI    │
+│      white: HSV V alto + S baixo + morfologia → ROI      │
+│ 3. Extração de sinal 1D (média do canal V na ROI)         │
 │ 4. Filtro passa-baixa digital (média móvel) + AGC         │
 │ 5. Detecção de preamble → sincronização de bit-clock      │
 │ 6. Amostragem no centro do bit (voto majoritário)         │
@@ -64,7 +100,9 @@ Construir um link de comunicação unidirecional em luz visível: um Arduino pis
 └───────────────────────────────────────────────────────────┘
 ```
 
-**Três blocos, um canal.** O Arduino é mantido "burro" de propósito: só camada física. O HOST-TX faz montagem do quadro. O HOST-RX é um pipeline linear em um único processo Python, cada estágio testável isoladamente com arquivo `.npy` ou vídeo gravado.
+**Narrativa PCOM** do TX dual: mudança de **portadora óptica** — de banda estreita (um matiz específico) para **espectro visível total** (lanterna branca). O mesmo sistema de enquadramento e demodulação funciona em ambas as portadoras, demonstrando independência da camada de modulação em relação à fonte física — exatamente como PCOM ensina que a modulação é ortogonal ao meio.
+
+**Arduino burro por design.** O Arduino só faz PHY. O HOST-TX faz montagem do quadro. O HOST-RX é um pipeline linear em um único processo Python, cada estágio testável isoladamente com arquivo `.npy` ou vídeo gravado.
 
 **Apresentação — três janelas simultâneas:**
 
@@ -152,11 +190,54 @@ loop:
 
 USB serial 115200 baud. Python escreve os bytes na ordem exata em que devem piscar. Sem protocolo extra — é um pipe FIFO. O buffer circular de 128 bytes no Arduino foi dimensionado para acomodar exatamente um quadro máximo (preamble 4 + STX 1 + LEN 1 + payload 120 + CRC 1 + ETX 1 = 128 bytes). Transmitir o buffer cheio leva 128 × 10 bits × 200 ms = 256 s (≈ 4 min 16 s). Controle de fluxo vem naturalmente do bloqueio de leitura USB quando o buffer enche.
 
-### Hardware
+### Hardware (TX primário)
 
 - LED verde ou azul, ânodo em D8 do Arduino.
 - Resistor limitador 220 Ω em série com o LED para GND.
 - (Opcional) LED vermelho em D13 como indicador de "quadro em transmissão".
+
+### TX alternativo — Celular via Termux (`scripts/tx_phone.sh`)
+
+Objetivo: usar a lanterna do celular Android como fonte alternativa de luz, demonstrando portabilidade da camada PHY e que o enquadramento/demodulação não dependem do hardware de TX.
+
+**Pipeline:**
+
+1. `tx.py` continua rodando no notebook e monta o quadro em bytes (mesmo código, sem modificação).
+2. Em vez de enviar via serial USB ao Arduino, escreve os bytes em um arquivo `frame.bin`.
+3. Transferir `frame.bin` ao celular (via `adb push`, `scp` via Termux SSH, ou simplesmente compartilhamento).
+4. No celular, `tx_phone.sh` lê `frame.bin`, expande cada byte em 10 bits UART (start, 8 LSB-first, stop) e emite via `termux-torch`:
+
+```bash
+#!/data/data/com.termux/files/usr/bin/bash
+# Uso: ./tx_phone.sh frame.bin
+FRAME=$1
+BIT_TIME=0.2  # 200 ms
+
+emit_bit() {
+    if [ "$1" = "1" ]; then termux-torch on; else termux-torch off; fi
+    sleep $BIT_TIME
+}
+
+while IFS= read -r -n1 byte_char; do
+    byte=$(printf '%d' "'$byte_char")
+    emit_bit 0                          # start bit
+    for i in 0 1 2 3 4 5 6 7; do
+        bit=$(( (byte >> i) & 1 ))       # LSB-first
+        emit_bit $bit
+    done
+    emit_bit 1                          # stop bit
+done < "$FRAME"
+
+termux-torch on                         # IDLE state
+```
+
+**Jitter esperado**: `termux-torch` + `sleep 0.2` em shell tem jitter de ~10-50 ms por bit. Mitigações já embutidas no design:
+
+- RX mede `Tb_medido` no preamble (Estado 2 do clock recovery), adapta-se ao bit-time real do TX.
+- 5 bps (200 ms/bit) é lento o suficiente para que ~50 ms de jitter por bit represente apenas 25% do bit-time — voto majoritário com 3 amostras absorve a maior parte.
+- Preamble de 4 bytes (40 bits) dá ~8 segundos de sinal para o receptor estimar `Tb_medido` com precisão via regressão linear dos zero-crossings.
+
+**Pré-requisito** no celular: instalar Termux (F-Droid) + `pkg install termux-api` + app Termux:API (permite acesso ao hardware de lanterna via `termux-torch`).
 
 ---
 
@@ -166,12 +247,15 @@ Pipeline linear: cada estágio recebe o output do anterior, produz um tipo de da
 
 ### Estágio 1 — Pré-processamento espacial (`cv_pipeline.py`)
 
-Objetivo: isolar a ROI do LED no frame e descartar o resto da cena.
+Objetivo: isolar a ROI da fonte de luz no frame e descartar o resto da cena. Operação **parametrizada por modo** selecionado via flag `--mode {color|white}` em `rx.py` (padrão: `color`).
 
-1. **Conversão BGR → HSV**. Filtragem por matiz (faixa de verde ou azul conforme o LED). Atua como um **filtro passa-faixa óptico**: a sala tem luz branca/amarela que cai fora da faixa do LED colorido.
-2. **Operações morfológicas**: `cv2.dilate` seguido de `cv2.erode` (fechamento) com kernel 3×3, para eliminar pontos brilhantes isolados (ruído visual).
-3. **ROI**: identificar o maior "blob" da máscara em cada frame. Trackar centróide entre frames com pequena inércia (média móvel sobre as últimas 10 posições) para estabilizar.
-4. **Threshold dinâmico** é aplicado no estágio 3 (sinal 1D), não aqui — manter esse estágio puramente espacial.
+1. **Conversão BGR → HSV** (comum aos dois modos).
+2. **Máscara de cor — depende do modo:**
+   - **`color`** (LED colorido do Arduino): filtro de matiz (faixa de verde ou azul conforme o LED) + saturação > 80. Atua como **filtro passa-faixa óptico** em banda estreita. A sala tem luz branca/amarela que cai fora da faixa do LED colorido.
+   - **`white`** (lanterna de celular): filtro de **alta luminosidade + baixa saturação**: `V > 200 AND S < 40`. Qualquer matiz serve (luz branca tem matiz indefinido). Equivalente a **filtro passa-tudo óptico com comparador de brilho** — detecta qualquer fonte intensa e acromática. A sala tem luz ambiente comumente amarelada (fluorescente) ou com saturação residual, filtrada pela condição de S baixo.
+3. **Operações morfológicas** (comum): `cv2.dilate` seguido de `cv2.erode` (fechamento) com kernel 3×3, para eliminar pontos brilhantes isolados (ruído visual).
+4. **ROI**: identificar o maior "blob" da máscara em cada frame. Trackar centróide entre frames com pequena inércia (média móvel sobre as últimas 10 posições) para estabilizar.
+5. **Threshold dinâmico** é aplicado no estágio 3 (sinal 1D), não aqui — manter esse estágio puramente espacial.
 
 ### Estágio 2 — Extração do sinal 1D
 
@@ -252,13 +336,17 @@ Lógica:
 
 | Componente | Conceito PCOM |
 |---|---|
-| LED piscando | Modulação em banda base (OOK) |
+| LED piscando (colorido ou branco) | Modulação em banda base (OOK) |
 | Fs câmera vs Rb | Critério de Nyquist / ausência de ISI |
 | Preamble 0x55 × 4 | Sincronização de símbolo / clock recovery |
 | Média móvel M=3 | Filtro FIR passa-baixa |
 | Threshold 10/90 | Decisão por limiar / quantização |
+| Modo color (HSV matiz+S) | Filtro passa-faixa óptico (banda estreita) |
+| Modo white (V alto + S baixo) | Filtro passa-tudo óptico com comparador de brilho (banda larga) |
 | CRC-8 | Codificação de canal (detecção de erro) |
 | Voto majoritário | Integrate-and-dump |
+| `Tb_medido` estimado no preamble | Recuperação de clock tolerante a drift (jitter de TX) |
+| TX Arduino vs TX lanterna | Portadora óptica intercambiável (banda estreita vs espectro visível total) |
 
 ---
 
@@ -311,11 +399,13 @@ LIFI/
 ├── firmware/
 │   └── tx.ino                  # Arduino: Timer1 ISR + UART-over-light
 ├── src/
-│   ├── tx.py                   # Host TX: teclado → quadro → serial
-│   ├── rx.py                   # Host RX: main loop, orquestra pipeline
+│   ├── tx.py                   # Host TX: teclado → quadro → serial/arquivo
+│   ├── rx.py                   # Host RX: main loop, flag --mode {color,white}
 │   ├── frame.py                # build_frame, parse_frame, crc8
-│   ├── cv_pipeline.py          # HSV + morfologia + ROI + sinal 1D
+│   ├── cv_pipeline.py          # HSV + morfologia + ROI + sinal 1D (2 modos)
 │   └── dsp.py                  # média móvel, AGC, clock recovery
+├── scripts/
+│   └── tx_phone.sh             # Termux: lê frame.bin, pisca lanterna
 ├── tests/
 │   ├── test_frame.py           # roundtrip, CRC, corrupções
 │   └── test_dsp.py             # clock recovery em sinais sintéticos
@@ -334,14 +424,15 @@ Cada módulo em `src/` testável isoladamente. O RX pode ser desenvolvido sem ha
 
 ## 9. Plano de validação
 
-Quatro camadas, cada uma gate para a próxima:
+Cinco camadas, cada uma gate para a próxima:
 
 | Camada | Escopo | Ferramenta |
 |---|---|---|
 | 1. Unitário — frame | `build_frame`/`parse_frame`/`crc8` são inversos; CRC detecta flip de 1 bit | `pytest`, 100% cobertura |
 | 2. Unitário — DSP | Clock recovery decodifica sinal 1D sintético com ruído gaussiano controlado; afere BER em função do SNR | `pytest`, `numpy` |
-| 3. Integração offline | Pipeline completo em vídeo gravado de LED piscando payload conhecido | `rx.py --input video.mp4` |
-| 4. Live (hardware) | Sistema completo em tempo real | Arduino + webcam + notebook |
+| 3. Integração offline | Pipeline completo em vídeo gravado (LED colorido e lanterna branca) piscando payload conhecido | `rx.py --mode {color,white} --input video.mp4` |
+| 4. Live modo color | Sistema completo em tempo real com Arduino | Arduino + webcam + notebook |
+| 5. Live modo white | Sistema completo em tempo real com lanterna | Celular (Termux) + webcam + notebook |
 
 ---
 
@@ -364,12 +455,12 @@ Quatro camadas, cada uma gate para a próxima:
 | Dia | Tarefa | Entregável |
 |---|---|---|
 | 8 | Clock recovery estados 3 e 4: detectar fim de preamble + amostrar no centro | Decodifica STX + LEN + 1 caractere ASCII |
-| 9 | Parser de quadro completo + validação CRC | Decodifica mensagem completa, mostra "CRC OK/FAIL" |
-| 10 | Contador de BER + display instantâneo | Terminal mostra BER após cada quadro |
-| 11 | Três janelas (frame bruto + máscara + gráfico 1D) em layout apresentável | Interface pronta para demo |
-| 12 | Testes de robustez: luz ambiente, distância, ângulo → medir BER | Tabela no relatório com BER × condição |
-| 13 | **CHECKPOINT 2** — demo funcional + rascunho do relatório | Dry-run de apresentação (5 min) |
-| 14 | Buffer — ajustes de iluminação na sala real, ensaio final | Pronto |
+| 9 | Parser de quadro completo + validação CRC + contador de BER | Mensagem completa com "CRC OK/FAIL" e BER acumulada |
+| 10 | Três janelas (frame bruto + máscara + gráfico 1D) em layout apresentável | Interface pronta para demo (TX Arduino) |
+| 11 | `cv_pipeline.py` modo `white`: V alto + S baixo. Flag `--mode` em `rx.py`. Testar com vídeo gravado de lanterna. | RX decodifica lanterna de celular piscada manualmente (modo white validado em bancada) |
+| 12 | `scripts/tx_phone.sh` no Termux + fluxo completo (`tx.py` → `frame.bin` → ADB push → Termux → lanterna) | Chat ao vivo via lanterna funcionando end-to-end |
+| 13 | **CHECKPOINT 2** — testes de robustez (ambos modos × luz ambiente × distância) + rascunho do relatório | Tabela BER × (modo × condição); dry-run de 5 min |
+| 14 | Buffer — ajustes de iluminação na sala real, ensaio final, limpar código | Pronto |
 
 ---
 
@@ -377,12 +468,14 @@ Quatro camadas, cada uma gate para a próxima:
 
 Ordem de corte, do menos doloroso ao mais:
 
-1. **Dia 12 atrasou?** Cortar tabela de BER × condição. Apresentar só 1 condição (sala escura).
-2. **Dia 10 atrasou?** Cortar display de BER em tempo real. Mostrar apenas "CRC OK/FAIL".
-3. **Dia 9 atrasou?** Voltar a payload fixo hardcoded. Perde "chat ao vivo", mantém toda a PHY/DSP.
-4. **Dia 8 atrasou (clock recovery travou)?** Usar bit-time fixo confiando no Arduino (sem tracking dinâmico). Perde rigor mas demo roda.
+1. **Dia 13 atrasou?** Cortar tabela de BER × (modo × condição). Apresentar tabela simplificada com 1-2 condições no modo color e 1 no modo white.
+2. **Dia 12 atrasou (Termux/ADB deu problema)?** Cortar demo ao vivo da lanterna; apresentar só modo color do Arduino. Modo white fica registrado em vídeo gravado como evidência + citado no relatório.
+3. **Dia 11 atrasou?** Cortar modo `--mode white` inteiro. Lanterna vira "trabalho futuro" no relatório. Núcleo do projeto (Arduino) intacto.
+4. **Dia 10 atrasou?** Cortar display de BER em tempo real. Mostrar apenas "CRC OK/FAIL".
+5. **Dia 9 atrasou?** Voltar a payload fixo hardcoded. Perde "chat ao vivo", mantém toda a PHY/DSP.
+6. **Dia 8 atrasou (clock recovery travou)?** Usar bit-time fixo confiando no Arduino (sem tracking dinâmico). Perde rigor mas demo roda.
 
-**Regra absoluta:** nunca cortar CRC, preamble ou as três janelas — carregam a narrativa PCOM do "10".
+**Regra absoluta:** nunca cortar CRC, preamble ou as três janelas — carregam a narrativa PCOM do "10". Modo white/lanterna é extensão, não núcleo.
 
 ---
 
@@ -394,6 +487,9 @@ Ordem de corte, do menos doloroso ao mais:
 | Luz fluorescente com flicker a 120 Hz | Alta | Filtragem HSV corta primeiro; M=3 atenua 120 Hz aliasado |
 | LED saturando câmera (ROI inteira branca) | Média | Ajustar resistor para LED mais dim, ou aumentar distância |
 | Arduino buffer overflow em payload longo | Baixa | LEN ≤ 120 bytes é o exato limite do buffer de 128 bytes (com overhead de 8 bytes); validar assertion em `tx.py` antes do `serial_link.write()` |
+| Jitter de OS na lanterna do celular > 50 ms/bit | Média | `Tb_medido` estimado no preamble absorve drift; voto majoritário com 3 amostras tolera deslocamento até ~0.5 bit-time; se pior, cair para modo color (Arduino) |
+| Termux sem permissão de lanterna / Termux:API ausente | Média | Passo de setup documentado no README; testar no próprio celular antes da apresentação; fallback = Arduino |
+| Luz ambiente branca intensa (sala clara) no modo white | Alta | AGC digital aprende mín/máx reais; threshold 10/90 compensa. Em extremo, cobrir lateral da câmera com mão ou reduzir iluminação |
 
 ---
 
@@ -402,7 +498,8 @@ Ordem de corte, do menos doloroso ao mais:
 O projeto é considerado "pronto para apresentação" quando:
 
 1. Camadas de validação 1, 2 e 3 passam.
-2. Um operador digita uma string curta (5-10 caracteres) e ela aparece no notebook receptor com CRC OK. Tempo esperado: ≈ (preamble 4 + STX 1 + LEN 1 + N + CRC 1 + ETX 1) × 2 s/byte, ou seja, ~26 s para 5 chars e ~36 s para 10 chars. Demonstração com até 40 caracteres leva ≈ 1 min 36 s e é usada apenas em dry-run.
-3. As três janelas funcionam simultaneamente sem travamento visível.
-4. BER acumulada é reportada na tela após cada quadro.
-5. Narrativa PCOM (tabela de mapeamento da Seção 5) é consistente entre código, relatório e fala da apresentação.
+2. **Modo color (Arduino, núcleo):** um operador digita uma string curta (5-10 caracteres) e ela aparece no notebook receptor com CRC OK. Tempo esperado: ≈ (preamble 4 + STX 1 + LEN 1 + N + CRC 1 + ETX 1) × 2 s/byte, ou seja, ~26 s para 5 chars e ~36 s para 10 chars. Demonstração com até 40 caracteres leva ≈ 1 min 36 s e é usada apenas em dry-run.
+3. **Modo white (lanterna, extensão):** mesmo fluxo acima mas com `rx.py --mode white` recebendo lanterna de celular rodando `tx_phone.sh` no Termux. CRC OK em pelo menos 1 de 3 tentativas de 5 caracteres. (Limiar mais frouxo por causa do jitter de OS.)
+4. As três janelas funcionam simultaneamente sem travamento visível.
+5. BER acumulada é reportada na tela após cada quadro.
+6. Narrativa PCOM (tabela de mapeamento da Seção 5) é consistente entre código, relatório e fala da apresentação.
