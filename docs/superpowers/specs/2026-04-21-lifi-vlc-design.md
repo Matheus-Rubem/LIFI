@@ -91,8 +91,8 @@ Convenção óptica: **1 = LED aceso, 0 = LED apagado**. Estado IDLE = LED aceso
 ```
 ┌─────────────────┬─────┬─────┬──────────────┬───────┬─────┐
 │ PREAMBLE (4 B)  │ STX │ LEN │ PAYLOAD (N)  │ CRC-8 │ ETX │
-│ 0xAA 0xAA 0xAA  │ 0x02│ 1 B │ N ≤ 120 ASCII│  1 B  │ 0x03│
-│ 0xAA            │     │     │              │       │     │
+│ 0x55 0x55 0x55  │ 0x02│ 1 B │ N ≤ 120 ASCII│  1 B  │ 0x03│
+│ 0x55            │     │     │              │       │     │
 └─────────────────┴─────┴─────┴──────────────┴───────┴─────┘
 ```
 
@@ -107,7 +107,9 @@ Mapeamento dos campos aos conceitos de PCOM:
 | CRC-8 (poly 0x07, init 0x00) | Detecção de erro | Codificação de canal |
 | ETX (0x03) | Delimitador de fim de quadro | Enquadramento |
 
-**Preamble de 4 bytes de 0xAA** com framing UART forma uma sequência perfeitamente alternada `0,1,0,1,0,1,...` de 40 bits (start bit 0, data LSB = 01010101, stop bit 1, concatenados). Serve para: (a) AGC digital (aprender mín/máx de brilho na sala); (b) estimativa fina do bit-time real da câmera; (c) sincronização de fase (localizar centros de bit).
+**Preamble de 4 bytes de 0x55** com framing UART LSB-first forma uma sequência perfeitamente alternada `0,1,0,1,0,1,...` de 40 bits. Cada byte 0x55 framed = start(0) + `1,0,1,0,1,0,1,0` (LSB-first data) + stop(1) = `0,1,0,1,0,1,0,1,0,1` — 10 bits alternados. Concatenação de 4 bytes preserva a alternação perfeita em todas as transições de byte. Serve para: (a) AGC digital (aprender mín/máx de brilho na sala); (b) estimativa fina do bit-time real da câmera; (c) sincronização de fase (localizar centros de bit).
+
+**Por que 0x55 e não 0xAA:** com LSB-first UART, 0xAA framed = `0,0,1,0,1,0,1,0,1,1` — começa com dois 0s (start+LSB) e termina com dois 1s (MSB+stop). Isso quebra a detecção de "dois bits iguais consecutivos = fim de preamble" (Seção 5 Estado 3). 0x55 é a escolha simétrica correta para LSB-first.
 
 ---
 
@@ -130,7 +132,7 @@ loop:
     payload = texto.encode('ascii')
     assert len(payload) <= 120
     quadro = bytearray()
-    quadro += bytes([0xAA]) * 4        # PREAMBLE
+    quadro += bytes([0x55]) * 4        # PREAMBLE
     quadro += bytes([0x02])            # STX
     quadro += bytes([len(payload)])    # LEN
     quadro += payload                  # PAYLOAD
@@ -148,7 +150,7 @@ loop:
 
 ### Link Python ↔ Arduino
 
-USB serial 115200 baud. Python escreve os bytes na ordem exata em que devem piscar. Sem protocolo extra — é um pipe FIFO. Buffer de 128 bytes no Arduino cobre 256 bits ópticos ≈ 51 s de transmissão, margem ampla para payload de até 120 bytes.
+USB serial 115200 baud. Python escreve os bytes na ordem exata em que devem piscar. Sem protocolo extra — é um pipe FIFO. O buffer circular de 128 bytes no Arduino foi dimensionado para acomodar exatamente um quadro máximo (preamble 4 + STX 1 + LEN 1 + payload 120 + CRC 1 + ETX 1 = 128 bytes). Transmitir o buffer cheio leva 128 × 10 bits × 200 ms = 256 s (≈ 4 min 16 s). Controle de fluxo vem naturalmente do bloqueio de leitura USB quando o buffer enche.
 
 ### Hardware
 
@@ -217,10 +219,16 @@ Estado 2 — Tracking do preamble:
   jitter de fps da webcam.
 
 Estado 3 — Detecção de fim de preamble:
-  Amostrar o bit no centro de cada bit-slot esperado. Contar bits
-  consecutivos. Preamble produz ...1,0,1,0,1,0,...
-  Ao encontrar DOIS bits iguais consecutivos, o segundo é o START BIT
-  do STX. Travar sincronização.
+  Amostrar o bit no centro de cada bit-slot esperado. Preamble produz
+  uma sequência perfeitamente alternada ...1,0,1,0,1,0,1,0... terminando
+  em 1 (stop bit do 4º byte 0x55).
+
+  Ao encontrar DOIS bits iguais consecutivos (ex: ...1,0,1,0,1,0,0,...),
+  o PRIMEIRO dos dois é o START BIT do STX (= 0), e o SEGUNDO é o LSB do
+  byte STX (0x02, LSB first = 01000000 → primeiro data bit = 0). Na
+  implementação, a violação é detectada no slot do segundo bit, então
+  recuar um bit-time para localizar o start bit. Travar sincronização
+  com bit_center[0] = centro do start bit do STX.
 
 Estado 4 — Decodificação:
   A partir do start bit do STX, amostrar cada bit no seu centro:
@@ -246,7 +254,7 @@ Lógica:
 |---|---|
 | LED piscando | Modulação em banda base (OOK) |
 | Fs câmera vs Rb | Critério de Nyquist / ausência de ISI |
-| Preamble 0xAA × 4 | Sincronização de símbolo / clock recovery |
+| Preamble 0x55 × 4 | Sincronização de símbolo / clock recovery |
 | Média móvel M=3 | Filtro FIR passa-baixa |
 | Threshold 10/90 | Decisão por limiar / quantização |
 | CRC-8 | Codificação de canal (detecção de erro) |
@@ -266,7 +274,7 @@ Lógica:
 | Margem Nyquist (Fs / 2·Rb) | 3× | Folga contra aliasing. |
 | M da média móvel | 3 frames | Corte em 10 Hz, preserva preamble, atenua flicker. |
 | Preamble | 4 bytes (40 bits) | Janela suficiente para AGC e estimativa de Tb. |
-| Payload máximo | 120 bytes | Folga no buffer do Arduino e demo prática. |
+| Payload máximo | 120 bytes | Limite do buffer do Arduino (128 bytes - 8 de overhead = 120 de payload). |
 
 ---
 
@@ -345,11 +353,11 @@ Quatro camadas, cada uma gate para a próxima:
 |---|---|---|
 | 1 | Setup: repositório, `requirements.txt`, Arduino IDE, LED/resistor montado | LED piscando a 1 Hz com `delay()` (proof-of-life) |
 | 2 | `frame.py` + `test_frame.py` (CRC, build, parse) | Testes passando, cobertura 100% do módulo |
-| 3 | `firmware/tx.ino` com Timer1 ISR a 5 Hz + buffer USB | LED piscando 0xAA contínuo, verificável com app de osciloscópio no celular |
+| 3 | `firmware/tx.ino` com Timer1 ISR a 5 Hz + buffer USB | LED piscando 0x55 contínuo, verificável com app de osciloscópio no celular |
 | 4 | `tx.py`: integração teclado → serial → Arduino | Digitar "OI" e ver LED executar o quadro completo |
 | 5 | `cv_pipeline.py`: captura webcam + HSV + ROI + sinal 1D | Gráfico `matplotlib` do sinal bruto mostrando onda quadrada do preamble |
 | 6 | `dsp.py`: média móvel + AGC (threshold 10/90) | Sinal quantizado em 0/1 alinhado visualmente com as piscadas |
-| 7 | **CHECKPOINT 1** — detecção de preamble end-to-end | Script imprime "PREAMBLE DETECTADO" ao ver 0xAA×4 |
+| 7 | **CHECKPOINT 1** — detecção de preamble end-to-end | Script imprime "PREAMBLE DETECTADO" ao ver 0x55×4 |
 
 ### Semana 2 — Decodificação + polimento
 
@@ -385,7 +393,7 @@ Ordem de corte, do menos doloroso ao mais:
 | Webcam com fps variável (28-32 fps) | Média | Medir fps real no setup, estimar Tb localmente a partir do preamble |
 | Luz fluorescente com flicker a 120 Hz | Alta | Filtragem HSV corta primeiro; M=3 atenua 120 Hz aliasado |
 | LED saturando câmera (ROI inteira branca) | Média | Ajustar resistor para LED mais dim, ou aumentar distância |
-| Arduino buffer overflow em payload longo | Baixa | LEN ≤ 120 bytes cobre com folga; validar em `tx.py` |
+| Arduino buffer overflow em payload longo | Baixa | LEN ≤ 120 bytes é o exato limite do buffer de 128 bytes (com overhead de 8 bytes); validar assertion em `tx.py` antes do `serial_link.write()` |
 
 ---
 
@@ -394,7 +402,7 @@ Ordem de corte, do menos doloroso ao mais:
 O projeto é considerado "pronto para apresentação" quando:
 
 1. Camadas de validação 1, 2 e 3 passam.
-2. Um operador digita uma string de até 40 caracteres e ela aparece no notebook receptor em ≤ 15 s com CRC OK.
+2. Um operador digita uma string curta (5-10 caracteres) e ela aparece no notebook receptor com CRC OK. Tempo esperado: ≈ (preamble 4 + STX 1 + LEN 1 + N + CRC 1 + ETX 1) × 2 s/byte, ou seja, ~26 s para 5 chars e ~36 s para 10 chars. Demonstração com até 40 caracteres leva ≈ 1 min 36 s e é usada apenas em dry-run.
 3. As três janelas funcionam simultaneamente sem travamento visível.
 4. BER acumulada é reportada na tela após cada quadro.
 5. Narrativa PCOM (tabela de mapeamento da Seção 5) é consistente entre código, relatório e fala da apresentação.
