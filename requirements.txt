@@ -1,0 +1,7 @@
+numpy==1.26.4
+opencv-python==4.9.0.80
+pyserial==3.5
+crcmod==1.7
+matplotlib==3.8.3
+pytest==8.1.1
+pytest-cov==5.0.0
