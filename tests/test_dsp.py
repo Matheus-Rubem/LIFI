@@ -29,3 +29,29 @@ class TestMovingAverage:
     def test_moving_average_m_equals_1_identity(self):
         signal = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
         assert np.allclose(dsp.moving_average(signal, m=1), signal)
+
+
+class TestComputeThreshold:
+    def test_threshold_on_clean_bimodal(self, bits_for_preamble, frames_per_bit):
+        preamble = synth_signal_from_bits(
+            bits_for_preamble, frames_per_bit=frames_per_bit,
+            high=200.0, low=50.0, noise_std=0.0,
+        )
+        thr = dsp.compute_threshold(preamble)
+        assert 120.0 < thr.threshold < 130.0  # ≈ (200+50)/2 = 125
+        assert thr.high > thr.low
+        assert thr.high >= 180.0
+        assert thr.low <= 70.0
+
+    def test_threshold_robust_to_outliers(self, bits_for_preamble, frames_per_bit):
+        preamble = synth_signal_from_bits(
+            bits_for_preamble, frames_per_bit=frames_per_bit,
+            high=200.0, low=50.0, noise_std=5.0,
+        )
+        # inject 3 huge spikes
+        preamble[10] = 1000.0
+        preamble[20] = 1000.0
+        preamble[30] = 1000.0
+        thr = dsp.compute_threshold(preamble)
+        assert thr.threshold < 200.0  # not dragged up by outliers
+        assert thr.high < 500.0
