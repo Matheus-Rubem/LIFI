@@ -34,12 +34,18 @@ Run as a module so relative imports resolve:
 # Back on notebook: python -m src.rx --mode white
 ```
 
-## Arduino upload
+## Hardware bring-up
 
-1. Open `firmware/tx.ino` in the Arduino IDE.
-2. Select Board: Arduino Uno (or Nano), Port: the one Arduino shows.
-3. Click Upload.
-4. With a wired LED on D8 through 220Ω resistor to GND, run
-   `python src/tx.py --port <port>`.
-5. Quick bench check: in the Serial Monitor at 115200 baud, type `UUUU` and
-   send — the LED should blink with an alternating 2.5 Hz preamble pattern.
+When hardware is available, follow the step-by-step checklist in
+`docs/HARDWARE_VERIFICATION.md`. It covers Arduino upload, LED wiring,
+bench checks, phone flashlight / Termux setup, and live validation for
+both modes.
+
+## Validation results
+
+_Fill in after running the hardware checklist._
+
+| Mode  | TX             | Attempts | OK  | BER~ | Notes |
+|-------|----------------|----------|-----|------|-------|
+| color | Arduino + LED  | -        | -   | -    | TBD   |
+| white | Phone Termux   | -        | -   | -    | TBD   |
