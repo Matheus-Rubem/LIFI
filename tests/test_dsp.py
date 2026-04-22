@@ -55,3 +55,39 @@ class TestComputeThreshold:
         thr = dsp.compute_threshold(preamble)
         assert thr.threshold < 200.0  # not dragged up by outliers
         assert thr.high < 500.0
+
+
+class TestFindPreamble:
+    def test_finds_preamble_at_start(self, bits_for_preamble, frames_per_bit, fs, bit_rate):
+        # Signal = leading silence + preamble + trailing silence
+        silence_before = [1] * (frames_per_bit * 10)  # IDLE high
+        silence_after = [1] * (frames_per_bit * 10)
+        signal = np.concatenate([
+            synth_signal_from_bits(
+                [b for b in silence_before],
+                frames_per_bit=1, high=200.0, low=50.0,
+            ),
+            synth_signal_from_bits(
+                bits_for_preamble, frames_per_bit=frames_per_bit,
+                high=200.0, low=50.0, noise_std=2.0,
+            ),
+            synth_signal_from_bits(
+                [b for b in silence_after],
+                frames_per_bit=1, high=200.0, low=50.0,
+            ),
+        ])
+        idx = dsp.find_preamble(signal, fs=fs, bit_rate=bit_rate)
+        assert idx is not None
+        # The preamble starts at offset len(silence_before) = 60
+        assert abs(idx - 60) <= frames_per_bit  # within 1 bit-time tolerance
+
+    def test_returns_none_on_pure_noise(self, fs, bit_rate):
+        rng = np.random.default_rng(1)
+        signal = 100.0 + rng.normal(0, 5, size=500)
+        idx = dsp.find_preamble(signal, fs=fs, bit_rate=bit_rate)
+        assert idx is None
+
+    def test_returns_none_on_constant(self, fs, bit_rate):
+        signal = np.full(500, 200.0)
+        idx = dsp.find_preamble(signal, fs=fs, bit_rate=bit_rate)
+        assert idx is None

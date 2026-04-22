@@ -30,3 +30,42 @@ def compute_threshold(preamble_signal: np.ndarray) -> Threshold:
     high = float(np.percentile(preamble_signal, 90))
     low = float(np.percentile(preamble_signal, 10))
     return Threshold(high=high, low=low, threshold=(high + low) / 2.0)
+
+
+def find_preamble(
+    signal: np.ndarray,
+    fs: float = FS_DEFAULT,
+    bit_rate: float = RB_DEFAULT,
+    correlation_threshold: float = 0.4,
+) -> int | None:
+    """Locate the start of the preamble via correlation with a 2.5 Hz square wave.
+
+    Returns the sample index where the preamble begins, or None if not found.
+    """
+    samples_per_bit = fs / bit_rate
+    window_frames = int(round(samples_per_bit * 8))  # ~8 bits ≈ 48 samples
+    if len(signal) < window_frames * 2:
+        return None
+
+    # Reference: alternating 0/1 bits at bit_rate, each bit samples_per_bit wide.
+    ref_bits = []
+    for i in range(int(window_frames / samples_per_bit) + 1):
+        ref_bits.append(1 if i % 2 == 0 else -1)
+    ref = np.repeat(ref_bits, int(round(samples_per_bit)))[:window_frames].astype(float)
+    ref -= ref.mean()
+    ref /= np.linalg.norm(ref) + 1e-12
+
+    best_corr = -1.0
+    best_idx = None
+    for start in range(0, len(signal) - window_frames):
+        window = signal[start : start + window_frames].astype(float)
+        window = window - window.mean()
+        norm = np.linalg.norm(window) + 1e-12
+        corr = float(np.dot(window, ref) / norm)
+        if corr > best_corr:
+            best_corr = corr
+            best_idx = start
+
+    if best_corr < correlation_threshold:
+        return None
+    return best_idx
