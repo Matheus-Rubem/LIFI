@@ -36,38 +36,66 @@ def find_preamble(
     signal: np.ndarray,
     fs: float = FS_DEFAULT,
     bit_rate: float = RB_DEFAULT,
-    correlation_threshold: float = 0.4,
+    correlation_threshold: float = 0.85,
 ) -> int | None:
     """Locate the start of the preamble via correlation with a 2.5 Hz square wave.
 
-    Returns the sample index where the preamble begins, or None if not found.
+    Real-time behavior: return the FIRST (earliest) sample index whose correlation
+    with the reference exceeds the threshold. A valid preamble is always before
+    any data, so the first strong match is the preamble; looking for the global
+    max can be fooled by bit sequences in the payload that happen to alternate.
+
+    Two candidate polarities are tried (the phase of the alternating pattern can
+    start with 0 or with 1, because the preamble stream begins with a start bit).
+    The first start index at which either polarity meets the threshold wins; we
+    then refine to the local peak within the first bit-time to get a crisper lock.
     """
     samples_per_bit = fs / bit_rate
-    window_frames = int(round(samples_per_bit * 8))  # ~8 bits ≈ 48 samples
+    window_frames = int(round(samples_per_bit * 8))
     if len(signal) < window_frames * 2:
         return None
 
-    # Reference: alternating 0/1 bits at bit_rate, each bit samples_per_bit wide.
-    ref_bits = []
-    for i in range(int(window_frames / samples_per_bit) + 1):
-        ref_bits.append(1 if i % 2 == 0 else -1)
-    ref = np.repeat(ref_bits, int(round(samples_per_bit)))[:window_frames].astype(float)
-    ref -= ref.mean()
-    ref /= np.linalg.norm(ref) + 1e-12
+    def _build_ref(invert: bool) -> np.ndarray:
+        ref_bits = []
+        for i in range(int(window_frames / samples_per_bit) + 1):
+            val = 1 if i % 2 == 0 else -1
+            if invert:
+                val = -val
+            ref_bits.append(val)
+        ref = np.repeat(ref_bits, int(round(samples_per_bit)))[:window_frames].astype(float)
+        ref -= ref.mean()
+        ref /= np.linalg.norm(ref) + 1e-12
+        return ref
 
-    best_corr = -1.0
-    best_idx = None
+    refs = [_build_ref(False), _build_ref(True)]
+
+    first_idx = None
+    first_corr = -1.0
     for start in range(0, len(signal) - window_frames):
         window = signal[start : start + window_frames].astype(float)
         window = window - window.mean()
         norm = np.linalg.norm(window) + 1e-12
-        corr = float(np.dot(window, ref) / norm)
+        corr = max(float(np.dot(window, r) / norm) for r in refs)
+        if corr >= correlation_threshold:
+            first_idx = start
+            first_corr = corr
+            break
+
+    if first_idx is None:
+        return None
+
+    # Refine: search within the next ~1 bit-time for a local peak (crisper start).
+    search_end = min(first_idx + int(round(samples_per_bit)), len(signal) - window_frames)
+    best_idx = first_idx
+    best_corr = first_corr
+    for start in range(first_idx, search_end):
+        window = signal[start : start + window_frames].astype(float)
+        window = window - window.mean()
+        norm = np.linalg.norm(window) + 1e-12
+        corr = max(float(np.dot(window, r) / norm) for r in refs)
         if corr > best_corr:
             best_corr = corr
             best_idx = start
-
-    if best_corr < correlation_threshold:
-        return None
     return best_idx
 
 
@@ -172,3 +200,77 @@ def decode_uart_byte(
     if stop != 1:
         return None, next_center
     return byte, next_center
+
+
+from src import frame as _frame  # noqa: E402 — late import avoids circularity concerns
+
+
+@dataclass(frozen=True)
+class DecodeResult:
+    payload: bytes | None
+    crc_ok: bool
+    error: str | None
+    bit_time_frames: float | None
+    preamble_start: int | None
+
+
+def decode_signal(
+    signal: np.ndarray,
+    fs: float = FS_DEFAULT,
+    bit_rate: float = RB_DEFAULT,
+    m: int = 3,
+    n_preamble_bits: int = 40,
+) -> DecodeResult:
+    """Full receive chain: filter -> find preamble -> estimate Tb -> locate STX ->
+    decode UART bytes -> parse frame.
+    """
+    filtered = moving_average(signal, m=m)
+
+    preamble_start = find_preamble(filtered, fs=fs, bit_rate=bit_rate)
+    if preamble_start is None:
+        return DecodeResult(None, False, "preamble not found", None, None)
+
+    # AGC on the preamble window
+    samples_per_bit = fs / bit_rate
+    preamble_end = preamble_start + int(round(n_preamble_bits * samples_per_bit))
+    preamble_end = min(preamble_end, len(filtered))
+    threshold_obj = compute_threshold(filtered[preamble_start:preamble_end])
+    threshold = threshold_obj.threshold
+
+    try:
+        tb_frames = estimate_bit_time_frames(
+            filtered[preamble_start:preamble_end], threshold=threshold
+        )
+    except ValueError as e:
+        return DecodeResult(None, False, str(e), None, preamble_start)
+
+    stx_center = find_end_of_preamble(
+        filtered, preamble_start=preamble_start,
+        bit_time_frames=tb_frames, threshold=threshold,
+        n_preamble_bits=n_preamble_bits,
+    )
+    if stx_center is None:
+        return DecodeResult(None, False, "STX not found", tb_frames, preamble_start)
+
+    # Decode up to MAX_PAYLOAD + 4 bytes (STX+LEN+CRC+ETX); abort on bad frame.
+    bytes_out = bytearray()
+    next_center = stx_center
+    for _ in range(_frame.MAX_PAYLOAD + 4):
+        value, next_center = decode_uart_byte(
+            filtered, start_bit_center=next_center,
+            bit_time_frames=tb_frames, threshold=threshold,
+        )
+        if value is None:
+            break
+        bytes_out.append(value)
+        if value == _frame.ETX and len(bytes_out) >= 4:
+            break
+
+    parsed = _frame.parse_frame(bytes(bytes_out))
+    return DecodeResult(
+        payload=parsed.payload,
+        crc_ok=parsed.ok,
+        error=parsed.error,
+        bit_time_frames=tb_frames,
+        preamble_start=preamble_start,
+    )

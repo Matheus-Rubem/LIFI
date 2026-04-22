@@ -191,3 +191,52 @@ class TestDecodeUartByte:
             bit_time_frames=float(frames_per_bit), threshold=threshold,
         )
         assert value == 0x00
+
+
+class TestDecodeSignal:
+    def test_decodes_full_frame_clean(self, frames_per_bit, fs, bit_rate):
+        from src.frame import build_frame
+        payload = b"OI"
+        full_frame = build_frame(payload)
+        bits = []
+        for byte in full_frame:
+            bits.extend(uart_bits_for_byte(byte))
+        # Idle before/after
+        signal = np.concatenate([
+            np.full(frames_per_bit * 4, 200.0),  # IDLE high
+            synth_signal_from_bits(
+                bits, frames_per_bit=frames_per_bit,
+                high=200.0, low=50.0, noise_std=1.0,
+            ),
+            np.full(frames_per_bit * 4, 200.0),
+        ])
+        result = dsp.decode_signal(signal, fs=fs, bit_rate=bit_rate)
+        assert result.payload == payload
+        assert result.crc_ok is True
+
+    def test_decodes_with_noise(self, frames_per_bit, fs, bit_rate):
+        from src.frame import build_frame
+        payload = b"Hello"
+        full_frame = build_frame(payload)
+        bits = []
+        for byte in full_frame:
+            bits.extend(uart_bits_for_byte(byte))
+        rng = np.random.default_rng(7)
+        prefix = np.full(frames_per_bit * 6, 200.0) + rng.normal(
+            0, 5.0, size=frames_per_bit * 6
+        )
+        body = synth_signal_from_bits(
+            bits, frames_per_bit=frames_per_bit,
+            high=200.0, low=50.0, noise_std=5.0, seed=7,
+        )
+        signal = np.concatenate([prefix, body])
+        result = dsp.decode_signal(signal, fs=fs, bit_rate=bit_rate)
+        assert result.payload == payload, f"decode error: {result.error}"
+        assert result.crc_ok is True
+
+    def test_returns_failed_when_no_preamble(self, fs, bit_rate):
+        rng = np.random.default_rng(0)
+        signal = 100.0 + rng.normal(0, 5, size=500)
+        result = dsp.decode_signal(signal, fs=fs, bit_rate=bit_rate)
+        assert result.payload is None
+        assert result.error is not None
