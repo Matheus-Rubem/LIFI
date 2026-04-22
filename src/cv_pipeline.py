@@ -6,6 +6,8 @@ Two modes (spec §5.1):
 """
 from __future__ import annotations
 
+from collections import deque
+
 import cv2
 import numpy as np
 
@@ -75,3 +77,28 @@ def extract_intensity(
         return 0.0
     hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
     return float(hsv[:, :, 2].mean())
+
+
+class ROITracker:
+    """Smooth centroid jitter over a sliding window of recent ROIs."""
+
+    def __init__(self, smoothing_window: int = 10) -> None:
+        self._history: deque[tuple[int, int, int, int]] = deque(maxlen=smoothing_window)
+
+    def update(
+        self, roi: tuple[int, int, int, int] | None
+    ) -> tuple[int, int, int, int] | None:
+        if roi is None:
+            if not self._history:
+                return None
+            return self._smoothed()
+        self._history.append(roi)
+        return self._smoothed()
+
+    def _smoothed(self) -> tuple[int, int, int, int]:
+        arr = np.array(self._history, dtype=float)
+        x = int(round(arr[:, 0].mean()))
+        y = int(round(arr[:, 1].mean()))
+        w = int(round(arr[:, 2].mean()))
+        h = int(round(arr[:, 3].mean()))
+        return (x, y, w, h)

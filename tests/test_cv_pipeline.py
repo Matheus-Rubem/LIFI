@@ -78,3 +78,28 @@ class TestExtractIntensity:
         intensity = cv_pipeline.extract_intensity(frame, roi)
         # ROI is mostly pure green, V channel ≈ 255 there, some ambient edges
         assert 180.0 <= intensity <= 256.0
+
+
+class TestRoiTracker:
+    def test_tracker_smoothes_jitter(self):
+        tracker = cv_pipeline.ROITracker(smoothing_window=5)
+        noisy_rois = [
+            (100, 100, 20, 20),
+            (102, 98, 20, 20),
+            (99, 101, 20, 20),
+            (101, 100, 20, 20),
+            (100, 100, 20, 20),
+        ]
+        out = [tracker.update(r) for r in noisy_rois]
+        # After the window fills, output should be very close to average center
+        x, y, w, h = out[-1]
+        cx, cy = x + w // 2, y + h // 2
+        assert abs(cx - 110) <= 2  # ~100 + 20/2
+        assert abs(cy - 110) <= 2
+
+    def test_tracker_returns_none_on_first_none(self):
+        tracker = cv_pipeline.ROITracker()
+        assert tracker.update(None) is None
+        tracker.update((100, 100, 20, 20))
+        # A None after valid updates returns the last smoothed ROI.
+        assert tracker.update(None) is not None
