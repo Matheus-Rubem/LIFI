@@ -91,3 +91,25 @@ class TestFindPreamble:
         signal = np.full(500, 200.0)
         idx = dsp.find_preamble(signal, fs=fs, bit_rate=bit_rate)
         assert idx is None
+
+
+class TestEstimateBitTime:
+    def test_estimate_matches_ideal(self, bits_for_preamble, frames_per_bit, fs):
+        signal = synth_signal_from_bits(
+            bits_for_preamble, frames_per_bit=frames_per_bit,
+            high=200.0, low=50.0, noise_std=2.0,
+        )
+        threshold = dsp.compute_threshold(signal).threshold
+        tb_frames = dsp.estimate_bit_time_frames(signal, threshold=threshold)
+        assert abs(tb_frames - 6.0) < 0.2  # within 0.2 frame of ideal
+
+    def test_estimate_on_slow_tx(self, bits_for_preamble, fs):
+        # Simulate a TX slightly slower than 5 bps (e.g. phone jitter adds
+        # 10% on average -> Tb_frames ≈ 6.6).
+        signal = synth_signal_from_bits(
+            bits_for_preamble, frames_per_bit=7,
+            high=200.0, low=50.0, noise_std=2.0,
+        )
+        threshold = dsp.compute_threshold(signal).threshold
+        tb_frames = dsp.estimate_bit_time_frames(signal, threshold=threshold)
+        assert abs(tb_frames - 7.0) < 0.3

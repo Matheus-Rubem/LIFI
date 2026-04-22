@@ -69,3 +69,21 @@ def find_preamble(
     if best_corr < correlation_threshold:
         return None
     return best_idx
+
+
+def estimate_bit_time_frames(
+    preamble_signal: np.ndarray,
+    threshold: float,
+) -> float:
+    """Estimate bit-time (in frames) from threshold crossings in the preamble.
+
+    0x55 with UART framing produces an alternating 0,1,0,1,... pattern at Rb bps.
+    Adjacent zero-crossings of the signal occur exactly one bit-time apart
+    (the square wave has period 2*Tb but two transitions per period, spaced Tb).
+    """
+    above = preamble_signal > threshold
+    crossings = np.where(np.diff(above.astype(int)) != 0)[0]
+    if len(crossings) < 3:
+        raise ValueError("not enough crossings to estimate Tb")
+    deltas = np.diff(crossings)
+    return float(np.median(deltas))
