@@ -63,3 +63,15 @@ def find_roi(
     if cv2.contourArea(largest) < min_area:
         return None
     return cv2.boundingRect(largest)
+
+
+def extract_intensity(
+    frame_bgr: np.ndarray, roi: tuple[int, int, int, int]
+) -> float:
+    """Mean of HSV V-channel inside the ROI (the spec's 1D brightness sample)."""
+    x, y, w, h = roi
+    patch = frame_bgr[y : y + h, x : x + w]
+    if patch.size == 0:
+        return 0.0
+    hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+    return float(hsv[:, :, 2].mean())
