@@ -26,3 +26,20 @@ def crc8(data: bytes) -> int:
             else:
                 crc = (crc << 1) & 0xFF
     return crc
+
+
+def build_frame(payload: bytes) -> bytes:
+    """Assemble a full optical frame from the given payload.
+
+    Frame layout: PREAMBLE(4) | STX | LEN | PAYLOAD | CRC-8(payload) | ETX
+    """
+    if len(payload) > MAX_PAYLOAD:
+        raise ValueError(
+            f"payload too large: {len(payload)} bytes (max {MAX_PAYLOAD})"
+        )
+    return (
+        bytes([PREAMBLE_BYTE] * PREAMBLE_LEN)
+        + bytes([STX, len(payload)])
+        + payload
+        + bytes([crc8(payload), ETX])
+    )

@@ -30,3 +30,38 @@ class TestCrc8:
         corrupted = bytearray(original)
         corrupted[3] ^= 0x01  # flip one bit in byte 3
         assert frame.crc8(bytes(corrupted)) != crc_a
+
+
+class TestBuildFrame:
+    def test_build_frame_structure_empty_payload(self):
+        result = frame.build_frame(b"")
+        expected = (
+            bytes([0x55] * 4)   # preamble
+            + bytes([0x02])     # STX
+            + bytes([0x00])     # LEN = 0
+            + b""               # payload
+            + bytes([frame.crc8(b"")])  # CRC (= 0x00)
+            + bytes([0x03])     # ETX
+        )
+        assert result == expected
+
+    def test_build_frame_structure_with_payload(self):
+        payload = b"AB"
+        result = frame.build_frame(payload)
+        assert result[:4] == bytes([0x55] * 4)
+        assert result[4] == 0x02  # STX
+        assert result[5] == 2     # LEN
+        assert result[6:8] == b"AB"
+        assert result[8] == frame.crc8(payload)
+        assert result[9] == 0x03  # ETX
+        assert len(result) == 4 + 1 + 1 + 2 + 1 + 1
+
+    def test_build_frame_max_payload(self):
+        payload = b"X" * 120
+        result = frame.build_frame(payload)
+        assert len(result) == 128  # 4 + 1 + 1 + 120 + 1 + 1
+        assert result[5] == 120
+
+    def test_build_frame_rejects_oversize_payload(self):
+        with pytest.raises(ValueError, match="payload too large"):
+            frame.build_frame(b"X" * 121)
