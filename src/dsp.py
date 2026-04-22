@@ -87,3 +87,53 @@ def estimate_bit_time_frames(
         raise ValueError("not enough crossings to estimate Tb")
     deltas = np.diff(crossings)
     return float(np.median(deltas))
+
+
+def _sample_bit(
+    signal: np.ndarray,
+    center: float,
+    threshold: float,
+    vote_half_width: int = 1,
+) -> int | None:
+    """Read the bit at `center` frames using a ±vote_half_width majority vote."""
+    lo = int(round(center)) - vote_half_width
+    hi = int(round(center)) + vote_half_width + 1
+    if lo < 0 or hi > len(signal):
+        return None
+    window = signal[lo:hi]
+    votes = (window > threshold).sum()
+    return 1 if votes > (hi - lo) / 2 else 0
+
+
+def find_end_of_preamble(
+    signal: np.ndarray,
+    preamble_start: int,
+    bit_time_frames: float,
+    threshold: float,
+    n_preamble_bits: int = 40,
+) -> int | None:
+    """Scan bit slots after the preamble for the first violation of alternation.
+
+    Returns the sample index of the CENTER of the STX start bit (== the first
+    of the two consecutive equal bits), or None if no violation within the signal.
+    """
+    # bit N center = preamble_start + (N + 0.5) * Tb
+    def bit_center(n: int) -> float:
+        return preamble_start + (n + 0.5) * bit_time_frames
+
+    # Sample preamble bits to know the expected alternation phase.
+    prev = _sample_bit(signal, bit_center(n_preamble_bits - 1), threshold)
+    n = n_preamble_bits
+    while True:
+        c = bit_center(n)
+        if c + 1 >= len(signal):
+            return None
+        current = _sample_bit(signal, c, threshold)
+        if current is None:
+            return None
+        if current == prev:
+            # Two same-level bits in a row; the FIRST was the STX start bit.
+            # Return the center of bit (n - 1).
+            return int(round(bit_center(n - 1)))
+        prev = current
+        n += 1

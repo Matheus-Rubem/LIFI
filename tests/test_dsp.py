@@ -113,3 +113,49 @@ class TestEstimateBitTime:
         threshold = dsp.compute_threshold(signal).threshold
         tb_frames = dsp.estimate_bit_time_frames(signal, threshold=threshold)
         assert abs(tb_frames - 7.0) < 0.3
+
+
+class TestFindEndOfPreamble:
+    def test_finds_stx_start_after_preamble(
+        self, bits_for_preamble, frames_per_bit, fs
+    ):
+        # Build: preamble + STX(0x02) + LEN(0) + CRC(0) + ETX(0x03)
+        from src.frame import crc8, STX, ETX
+        from_bytes = [STX, 0x00, crc8(b""), ETX]
+        bits = list(bits_for_preamble)
+        for b in from_bytes:
+            bits.extend(uart_bits_for_byte(b))
+        signal = synth_signal_from_bits(
+            bits, frames_per_bit=frames_per_bit, high=200.0, low=50.0, noise_std=1.0,
+        )
+        threshold = dsp.compute_threshold(signal).threshold
+        tb_frames = dsp.estimate_bit_time_frames(signal, threshold=threshold)
+
+        stx_start_bit_center = dsp.find_end_of_preamble(
+            signal,
+            preamble_start=0,
+            bit_time_frames=tb_frames,
+            threshold=threshold,
+            n_preamble_bits=40,
+        )
+        assert stx_start_bit_center is not None
+        # STX start-bit is the 41st bit in the stream; its center in frames is
+        # 40 * 6 + 6/2 = 243. Allow ±1 frame tolerance.
+        expected_center = 40 * frames_per_bit + frames_per_bit // 2
+        assert abs(stx_start_bit_center - expected_center) <= 1
+
+    def test_returns_none_when_no_violation(
+        self, bits_for_preamble, frames_per_bit
+    ):
+        # Only preamble, no STX ever comes.
+        signal = synth_signal_from_bits(
+            bits_for_preamble, frames_per_bit=frames_per_bit,
+            high=200.0, low=50.0, noise_std=1.0,
+        )
+        threshold = dsp.compute_threshold(signal).threshold
+        tb_frames = dsp.estimate_bit_time_frames(signal, threshold=threshold)
+        result = dsp.find_end_of_preamble(
+            signal, preamble_start=0, bit_time_frames=tb_frames,
+            threshold=threshold, n_preamble_bits=40,
+        )
+        assert result is None
