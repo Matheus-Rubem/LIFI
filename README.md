@@ -18,18 +18,20 @@ pytest
 
 ## Live demo (mode color, Arduino + LED)
 
+Run as a module so relative imports resolve:
+
 ```
-# Terminal 1 (TX): python src/tx.py --port /dev/ttyUSB0
-# Terminal 2 (RX): python src/rx.py --mode color
+# Terminal 1 (TX): python -m src.tx --port /dev/ttyUSB0
+# Terminal 2 (RX): python -m src.rx --mode color
 ```
 
 ## Live demo (mode white, phone flashlight via Termux)
 
 ```
-# On the notebook: python src/tx.py --out frame.bin
+# On the notebook: python -m src.tx --out frame.bin
 # Transfer frame.bin to phone (adb push frame.bin /sdcard/)
 # On phone in Termux: bash scripts/tx_phone.sh /sdcard/frame.bin
-# Back on notebook: python src/rx.py --mode white
+# Back on notebook: python -m src.rx --mode white
 ```
 
 ## Arduino upload

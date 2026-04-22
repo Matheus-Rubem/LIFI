@@ -1,10 +1,11 @@
-"""Live receiver: webcam -> OpenCV pipeline -> DSP -> console.
+"""Live receiver: webcam -> OpenCV pipeline -> DSP -> three-window UI + console.
 
 Usage:
   python src/rx.py --mode {color|white} [--camera 0] [--input video.mp4]
-                   [--buffer-seconds 12] [--fps 30]
+                   [--buffer-seconds 12] [--fps 30] [--no-gui]
 
 With --input, reads a video file instead of the webcam (for offline validation).
+With --no-gui, skips all OpenCV windows (useful for tests and headless runs).
 """
 from __future__ import annotations
 
@@ -30,11 +31,14 @@ class RxStats:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="LiFi RX (webcam + OpenCV + DSP)")
     ap.add_argument("--mode", choices=list(cv_pipeline.MODES), default="color")
-    ap.add_argument("--camera", type=int, default=0, help="Camera index (default 0)")
+    ap.add_argument("--camera", type=int, default=0)
     ap.add_argument("--input", help="Video file to read instead of the camera")
     ap.add_argument("--fps", type=float, default=30.0)
-    ap.add_argument("--buffer-seconds", type=float, default=12.0,
-                    help="Length of the sliding 1D-signal buffer in seconds")
+    ap.add_argument("--buffer-seconds", type=float, default=30.0,
+                    help="Sliding buffer length. At 5 bps, 30 s = 150 bits = "
+                         "enough for preamble + ~5-byte frame. Increase for "
+                         "longer payloads.")
+    ap.add_argument("--no-gui", action="store_true", help="Console only (for CI/tests)")
     args = ap.parse_args(argv)
 
     cap = cv2.VideoCapture(args.input if args.input else args.camera)
@@ -47,17 +51,33 @@ def main(argv: list[str] | None = None) -> int:
     tracker = cv_pipeline.ROITracker(smoothing_window=10)
     stats = RxStats()
 
+    if not args.no_gui:
+        cv2.namedWindow("LiFi RX — raw", cv2.WINDOW_NORMAL)
+        cv2.namedWindow("LiFi RX — mask", cv2.WINDOW_NORMAL)
+        cv2.namedWindow("LiFi RX — signal 1D", cv2.WINDOW_NORMAL)
+
     try:
         while True:
             ok, frame_bgr = cap.read()
             if not ok:
                 break
+            mask = cv_pipeline.compute_mask(frame_bgr, mode=args.mode)
             roi = cv_pipeline.find_roi(frame_bgr, mode=args.mode)
             roi = tracker.update(roi)
             intensity = cv_pipeline.extract_intensity(frame_bgr, roi) if roi else 0.0
             signal_buf.append(intensity)
 
-            # Attempt decode once per second of new data.
+            if not args.no_gui:
+                display = frame_bgr.copy()
+                if roi:
+                    x, y, w, h = roi
+                    cv2.rectangle(display, (x, y), (x + w, y + h), (0, 0, 255), 2)
+                cv2.imshow("LiFi RX — raw", display)
+                cv2.imshow("LiFi RX — mask", mask)
+                _draw_signal_plot(list(signal_buf), mode_label=args.mode)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
+
             if len(signal_buf) == buf_len and stats.frames_received % int(args.fps) == 0:
                 signal = np.asarray(signal_buf, dtype=float)
                 result = dsp.decode_signal(signal, fs=args.fps, bit_rate=5.0)
@@ -65,8 +85,8 @@ def main(argv: list[str] | None = None) -> int:
                     stats.frames_ok += 1
                     stats.total_payload_bytes += len(result.payload or b"")
                     text = (result.payload or b"").decode("ascii", errors="replace")
-                    print(f"[OK ] '{text}'  (frames_ok={stats.frames_ok})")
-                    signal_buf.clear()  # avoid re-decoding the same frame
+                    print(f"[OK ] '{text}'  frames_ok={stats.frames_ok}")
+                    signal_buf.clear()
                 elif result.error and "preamble not found" not in result.error:
                     stats.frames_bad_crc += 1
                     print(f"[ERR] {result.error}")
@@ -74,12 +94,43 @@ def main(argv: list[str] | None = None) -> int:
             stats.frames_received += 1
     finally:
         cap.release()
+        if not args.no_gui:
+            cv2.destroyAllWindows()
 
     print(
         f"summary: received={stats.frames_received} ok={stats.frames_ok} "
         f"bad_crc={stats.frames_bad_crc} bytes={stats.total_payload_bytes}"
     )
     return 0
+
+
+def _draw_signal_plot(signal: list[float], mode_label: str) -> None:
+    """Render the 1D signal as a third OpenCV window.
+
+    Draws directly into a numpy canvas — no matplotlib to avoid thread issues
+    when OpenCV's main loop already owns the display.
+    """
+    h, w = 200, 800
+    canvas = np.full((h, w, 3), 255, dtype=np.uint8)
+    if not signal:
+        cv2.imshow("LiFi RX — signal 1D", canvas)
+        return
+    arr = np.asarray(signal, dtype=float)
+    lo, hi = float(arr.min()), float(arr.max()) + 1e-9
+    span = max(hi - lo, 1.0)
+    # Downsample to width
+    if len(arr) > w:
+        idx = np.linspace(0, len(arr) - 1, w).astype(int)
+        arr = arr[idx]
+    xs = np.linspace(0, w - 1, len(arr)).astype(int)
+    ys = (h - 10 - (arr - lo) / span * (h - 20)).astype(int)
+    for i in range(1, len(xs)):
+        cv2.line(canvas, (xs[i - 1], ys[i - 1]), (xs[i], ys[i]), (0, 0, 0), 1)
+    cv2.putText(
+        canvas, f"mode={mode_label}  samples={len(signal)}",
+        (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA,
+    )
+    cv2.imshow("LiFi RX — signal 1D", canvas)
 
 
 if __name__ == "__main__":
