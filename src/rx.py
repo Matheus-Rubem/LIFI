@@ -26,6 +26,13 @@ class RxStats:
     frames_ok: int = 0
     frames_bad_crc: int = 0
     total_payload_bytes: int = 0
+    total_frames_attempted: int = 0  # decodes that reached CRC (ok or fail)
+
+    @property
+    def ber(self) -> float:
+        if self.total_frames_attempted == 0:
+            return 0.0
+        return self.frames_bad_crc / self.total_frames_attempted
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -72,6 +79,13 @@ def main(argv: list[str] | None = None) -> int:
                 if roi:
                     x, y, w, h = roi
                     cv2.rectangle(display, (x, y), (x + w, y + h), (0, 0, 255), 2)
+                cv2.putText(
+                    display,
+                    f"mode={args.mode}  ok={stats.frames_ok}  "
+                    f"bad={stats.frames_bad_crc}  BER~{stats.ber*100:.1f}%",
+                    (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                    (0, 255, 0), 2, cv2.LINE_AA,
+                )
                 cv2.imshow("LiFi RX — raw", display)
                 cv2.imshow("LiFi RX — mask", mask)
                 _draw_signal_plot(list(signal_buf), mode_label=args.mode)
@@ -83,13 +97,21 @@ def main(argv: list[str] | None = None) -> int:
                 result = dsp.decode_signal(signal, fs=args.fps, bit_rate=5.0)
                 if result.crc_ok:
                     stats.frames_ok += 1
+                    stats.total_frames_attempted += 1
                     stats.total_payload_bytes += len(result.payload or b"")
                     text = (result.payload or b"").decode("ascii", errors="replace")
-                    print(f"[OK ] '{text}'  frames_ok={stats.frames_ok}")
+                    print(
+                        f"[OK ] '{text}'  ok={stats.frames_ok}  "
+                        f"BER~{stats.ber*100:.1f}%"
+                    )
                     signal_buf.clear()
                 elif result.error and "preamble not found" not in result.error:
                     stats.frames_bad_crc += 1
-                    print(f"[ERR] {result.error}")
+                    stats.total_frames_attempted += 1
+                    print(
+                        f"[ERR] {result.error}  bad_crc={stats.frames_bad_crc}  "
+                        f"BER~{stats.ber*100:.1f}%"
+                    )
 
             stats.frames_received += 1
     finally:
