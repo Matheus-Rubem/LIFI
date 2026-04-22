@@ -43,3 +43,50 @@ def build_frame(payload: bytes) -> bytes:
         + payload
         + bytes([crc8(payload), ETX])
     )
+
+
+@dataclass(frozen=True)
+class ParsedFrame:
+    ok: bool
+    payload: bytes | None
+    error: str | None
+
+
+def parse_frame(body: bytes) -> ParsedFrame:
+    """Parse a frame body (bytes starting at STX, preamble already stripped).
+
+    Returns a ParsedFrame with ok=True and .payload if valid; otherwise
+    ok=False and .error describing the first failure found.
+    """
+    if len(body) < 4:  # STX + LEN + CRC + ETX minimum
+        return ParsedFrame(False, None, "truncated: need >=4 bytes")
+    if body[0] != STX:
+        return ParsedFrame(False, None, f"bad STX: got 0x{body[0]:02X}")
+
+    length = body[1]
+    if length > MAX_PAYLOAD:
+        return ParsedFrame(False, None, f"LEN too large: {length} > {MAX_PAYLOAD}")
+
+    expected_total = 1 + 1 + length + 1 + 1  # STX+LEN+payload+CRC+ETX
+    if len(body) < expected_total:
+        return ParsedFrame(
+            False, None,
+            f"truncated: need {expected_total} bytes, got {len(body)}",
+        )
+
+    payload = body[2 : 2 + length]
+    received_crc = body[2 + length]
+    if body[2 + length + 1] != ETX:
+        return ParsedFrame(
+            False, None,
+            f"bad ETX: got 0x{body[2 + length + 1]:02X}",
+        )
+
+    computed_crc = crc8(payload)
+    if received_crc != computed_crc:
+        return ParsedFrame(
+            False, None,
+            f"CRC mismatch: got 0x{received_crc:02X}, expected 0x{computed_crc:02X}",
+        )
+
+    return ParsedFrame(True, payload, None)

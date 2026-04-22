@@ -65,3 +65,59 @@ class TestBuildFrame:
     def test_build_frame_rejects_oversize_payload(self):
         with pytest.raises(ValueError, match="payload too large"):
             frame.build_frame(b"X" * 121)
+
+
+class TestParseFrame:
+    def _body_of(self, full_frame: bytes) -> bytes:
+        """Strip the 4-byte preamble; the parser works from STX onward."""
+        return full_frame[4:]
+
+    def test_parse_frame_roundtrip_empty(self):
+        payload = b""
+        body = self._body_of(frame.build_frame(payload))
+        result = frame.parse_frame(body)
+        assert result.ok is True
+        assert result.payload == payload
+        assert result.error is None
+
+    def test_parse_frame_roundtrip_short(self):
+        payload = b"Hello, PCOM!"
+        body = self._body_of(frame.build_frame(payload))
+        result = frame.parse_frame(body)
+        assert result.ok is True
+        assert result.payload == payload
+
+    def test_parse_frame_bad_stx(self):
+        body = b"\xFF" + b"\x00" + b"\x00" + b"\x03"  # wrong STX
+        result = frame.parse_frame(body)
+        assert result.ok is False
+        assert "STX" in result.error
+
+    def test_parse_frame_bad_etx(self):
+        payload = b"AB"
+        body = bytearray(self._body_of(frame.build_frame(payload)))
+        body[-1] = 0xFF  # corrupt ETX
+        result = frame.parse_frame(bytes(body))
+        assert result.ok is False
+        assert "ETX" in result.error
+
+    def test_parse_frame_bad_crc(self):
+        payload = b"AB"
+        body = bytearray(self._body_of(frame.build_frame(payload)))
+        body[2] ^= 0x01  # flip a bit in payload
+        result = frame.parse_frame(bytes(body))
+        assert result.ok is False
+        assert "CRC" in result.error
+
+    def test_parse_frame_len_too_large(self):
+        body = bytes([0x02, 121]) + b"X" * 121 + bytes([0, 0x03])
+        result = frame.parse_frame(body)
+        assert result.ok is False
+        assert "LEN" in result.error
+
+    def test_parse_frame_truncated(self):
+        payload = b"AB"
+        body = self._body_of(frame.build_frame(payload))
+        result = frame.parse_frame(body[:-2])  # chop CRC + ETX
+        assert result.ok is False
+        assert "truncated" in result.error.lower()
