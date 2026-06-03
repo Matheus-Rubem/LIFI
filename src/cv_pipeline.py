@@ -56,15 +56,33 @@ def compute_mask(frame_bgr: np.ndarray, mode: str) -> np.ndarray:
 def find_roi(
     frame_bgr: np.ndarray, mode: str, min_area: int = 50
 ) -> tuple[int, int, int, int] | None:
-    """Return (x, y, w, h) of the largest blob for the mode, or None if absent."""
+    """Return (x, y, w, h) of the BRIGHTEST qualifying blob, or None if absent.
+
+    We pick the brightest blob (highest mean V) rather than the largest because
+    a lit room makes a white breadboard/reflections pass the white mask with a
+    LARGER area than the LED itself — but the LED saturates to V~255, so it wins
+    on brightness. This keeps the ROI locked on the light source, not the
+    background.
+    """
     mask = compute_mask(frame_bgr, mode)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
+    candidates = [c for c in contours if cv2.contourArea(c) >= min_area]
+    if not candidates:
         return None
-    largest = max(contours, key=cv2.contourArea)
-    if cv2.contourArea(largest) < min_area:
-        return None
-    return cv2.boundingRect(largest)
+    value = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)[:, :, 2]
+
+    def mean_brightness(contour) -> float:
+        # Mean V over the blob's actual (masked) pixels, NOT its bounding box:
+        # a round LED's bbox includes dark corners that would drag the mean
+        # below a large, merely-bright background rectangle.
+        x, y, w, h = cv2.boundingRect(contour)
+        sub_v = value[y : y + h, x : x + w]
+        sub_m = mask[y : y + h, x : x + w]
+        vals = sub_v[sub_m > 0]
+        return float(vals.mean()) if vals.size else 0.0
+
+    brightest = max(candidates, key=mean_brightness)
+    return cv2.boundingRect(brightest)
 
 
 def extract_intensity(
