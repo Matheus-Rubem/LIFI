@@ -50,6 +50,11 @@ def main(argv: list[str] | None = None) -> int:
                          "full transmission: a ~10-byte frame at 2.5 bps lasts "
                          "~56 s, so the default is 75 s. Raise for longer payloads "
                          "or lower bit rates.")
+    ap.add_argument("--exposure", type=float, default=None,
+                    help="Fix the camera exposure to keep fps stable (the LED "
+                         "blinking makes auto-exposure hunt, swinging fps and "
+                         "corrupting longer messages). Try values like -5, -6, -7. "
+                         "Omit to keep auto-exposure.")
     ap.add_argument("--no-gui", action="store_true", help="Console only (for CI/tests)")
     ap.add_argument("--display-every", type=int, default=3,
                     help="Render the GUI windows every Nth frame. Sampling still "
@@ -67,6 +72,11 @@ def main(argv: list[str] | None = None) -> int:
         # webcam may ignore these (and dark rooms drop fps via long exposure).
         cap.set(cv2.CAP_PROP_FPS, 30)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        if args.exposure is not None:
+            # Disable auto-exposure (0.25 = manual on most UVC drivers) and pin a
+            # fixed exposure so the blinking LED can't make fps hunt up and down.
+            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+            cap.set(cv2.CAP_PROP_EXPOSURE, args.exposure)
 
     # Time-windowed sliding buffers, trimmed by wall-clock seconds (not sample
     # count) so the window holds a fixed DURATION regardless of the webcam's
