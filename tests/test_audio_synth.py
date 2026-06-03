@@ -30,3 +30,9 @@ def test_rest_is_silence():
 def test_no_clipping():
     out = synthesize([Note(60, 8), Note(64, 8), Note(67, 8)])
     assert np.max(np.abs(out)) <= 1.0
+
+
+def test_audio_rx_module_imports_and_has_play():
+    import src.audio_rx as arx
+    assert hasattr(arx, "play_payload")
+    assert hasattr(arx, "main")
