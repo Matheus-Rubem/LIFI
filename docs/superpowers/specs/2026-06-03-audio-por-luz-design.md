@@ -81,11 +81,14 @@ como pausa.
 
 1. **Captura:** grava `--seconds` (padrão 5 s) do microfone a **8 kHz** mono
    (Nyquist 4 kHz cobre a faixa com folga).
-2. **Janelamento:** fatia em janelas de **50 ms** (400 amostras), sem
-   sobreposição.
+2. **Janelamento:** passo (*hop*) de **50 ms** (granularidade de tempo), com
+   **janela de análise de 125 ms** (1000 amostras a 8 kHz). A janela maior dá
+   resolução de frequência ~8 Hz, suficiente para separar semitons graves
+   (Dó3≈131 Hz tem semitons ~8 Hz); 50 ms (20 Hz) confundiria notas vizinhas.
 3. **Banco de Goertzel** (`pitch_detect.py`): para cada janela, calcula a
-   energia em cada uma das 25 frequências-alvo (uma por semitom). A nota
-   vencedora é a de maior energia.
+   energia em cada uma das 25 frequências-alvo (uma por semitom), usando a
+   forma generalizada (avalia exatamente em `f`, sem arredondar para *bin*). A
+   nota vencedora é a de maior energia.
    - **Silêncio:** se a energia máxima ficar abaixo de um limiar (relativo ao
      piso de ruído da gravação), a janela é classificada como pausa.
 4. **Segmentação:** junta janelas consecutivas de mesma nota numa única nota,
