@@ -4,9 +4,13 @@
 
   Responsibility:
     - Read bytes from USB serial at 115200 baud into a 128-byte circular buffer.
-    - At 5 Hz (200 ms/bit), emit each byte as 10 UART-over-light bits on pin D8:
+    - At 2.5 Hz (400 ms/bit), emit each byte as 10 UART-over-light bits on pin D8:
         start(0) + 8 data LSB-first + stop(1)
     - When buffer empty, hold LED HIGH (IDLE).
+
+  NOTE: bit rate lowered from 5 Hz to 2.5 Hz so a typical webcam (15-25 fps)
+  gets ~6-10 samples/bit instead of ~3. The receiver MUST decode with the
+  matching rate: `python -m src.rx --mode white --bit-rate 2.5`.
 
   Design: Timer1 in CTC mode drives the bit emitter ISR. loop() just fills the
   buffer. No SoftwareSerial — all bit timing is controlled by Timer1.
@@ -17,7 +21,7 @@
 constexpr uint8_t LED_PIN = 8;
 constexpr uint8_t INDICATOR_PIN = 13;          // optional on-board LED
 constexpr size_t BUF_SIZE = 128;               // exactly one max frame
-constexpr uint16_t OCR1A_VAL = 3124;           // 200 ms at 16 MHz / prescaler 1024
+constexpr uint16_t OCR1A_VAL = 6249;           // 400 ms at 16 MHz / prescaler 1024
 
 volatile uint8_t  buf[BUF_SIZE];
 volatile size_t   head = 0;
@@ -52,7 +56,7 @@ void setup() {
 
   Serial.begin(115200);
 
-  // Timer1 CTC: 16 MHz / 1024 / 3125 = 5 Hz -> OCR1A = 3124
+  // Timer1 CTC: 16 MHz / 1024 / 6250 = 2.5 Hz -> OCR1A = 6249
   noInterrupts();
   TCCR1A = 0;
   TCCR1B = (1 << WGM12) | (1 << CS12) | (1 << CS10);  // CTC, prescaler 1024

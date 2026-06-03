@@ -42,10 +42,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--camera", type=int, default=0)
     ap.add_argument("--input", help="Video file to read instead of the camera")
     ap.add_argument("--fps", type=float, default=30.0)
-    ap.add_argument("--buffer-seconds", type=float, default=30.0,
-                    help="Sliding buffer length. At 5 bps, 30 s = 150 bits = "
-                         "enough for preamble + ~5-byte frame. Increase for "
-                         "longer payloads.")
+    ap.add_argument("--bit-rate", type=float, default=5.0,
+                    help="Optical bit rate in bps. MUST match the firmware: the "
+                         "current tx.ino runs at 2.5 Hz, so use --bit-rate 2.5.")
+    ap.add_argument("--buffer-seconds", type=float, default=75.0,
+                    help="Sliding time window (seconds). Must be longer than one "
+                         "full transmission: a ~10-byte frame at 2.5 bps lasts "
+                         "~56 s, so the default is 75 s. Raise for longer payloads "
+                         "or lower bit rates.")
     ap.add_argument("--no-gui", action="store_true", help="Console only (for CI/tests)")
     ap.add_argument("--display-every", type=int, default=3,
                     help="Render the GUI windows every Nth frame. Sampling still "
@@ -64,15 +68,17 @@ def main(argv: list[str] | None = None) -> int:
         cap.set(cv2.CAP_PROP_FPS, 30)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-    buf_len = int(args.buffer_seconds * args.fps)
-    signal_buf: collections.deque[float] = collections.deque(maxlen=buf_len)
-    # Wall-clock timestamp per sample. The display loop is usually slower than
-    # the nominal --fps, and the decoder's bit timing depends on the REAL rate,
-    # so we measure it from these timestamps instead of trusting args.fps.
-    ts_buf: collections.deque[float] = collections.deque(maxlen=buf_len)
+    # Time-windowed sliding buffers, trimmed by wall-clock seconds (not sample
+    # count) so the window holds a fixed DURATION regardless of the webcam's
+    # variable frame rate. The parallel timestamp buffer also lets us measure
+    # the real sample rate, which the decoder's bit timing depends on.
+    max_samples = int(args.buffer_seconds * 60) + 64  # memory safety cap
+    signal_buf: collections.deque[float] = collections.deque(maxlen=max_samples)
+    ts_buf: collections.deque[float] = collections.deque(maxlen=max_samples)
     tracker = cv_pipeline.ROITracker(smoothing_window=10)
     stats = RxStats()
     fs_eff = args.fps
+    last_status: float | None = None
 
     if not args.no_gui:
         cv2.namedWindow("LiFi RX — raw", cv2.WINDOW_NORMAL)
@@ -89,12 +95,16 @@ def main(argv: list[str] | None = None) -> int:
             roi = tracker.update(roi)
             intensity = cv_pipeline.extract_intensity(frame_bgr, roi) if roi else 0.0
             signal_buf.append(intensity)
-            # Only a LIVE camera samples in real time; a video file is read as
-            # fast as the CPU allows, so wall-clock would misreport its fps.
-            if not args.input:
-                ts_buf.append(time.monotonic())
-                if len(ts_buf) >= 2 and (ts_buf[-1] - ts_buf[0]) > 0:
-                    fs_eff = (len(ts_buf) - 1) / (ts_buf[-1] - ts_buf[0])
+            # A live camera is timestamped by the wall clock; a video file is read
+            # as fast as the CPU allows, so we synthesize uniform timestamps from
+            # its nominal fps. Either way the buffer is trimmed by elapsed time.
+            now_t = time.monotonic() if not args.input else stats.frames_received / args.fps
+            ts_buf.append(now_t)
+            while len(ts_buf) >= 2 and (ts_buf[-1] - ts_buf[0]) > args.buffer_seconds:
+                ts_buf.popleft()
+                signal_buf.popleft()
+            if not args.input and len(ts_buf) >= 2 and (ts_buf[-1] - ts_buf[0]) > 0:
+                fs_eff = (len(ts_buf) - 1) / (ts_buf[-1] - ts_buf[0])
 
             if not args.no_gui and stats.frames_received % max(1, args.display_every) == 0:
                 display = frame_bgr.copy()
@@ -114,29 +124,41 @@ def main(argv: list[str] | None = None) -> int:
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
 
-            if len(signal_buf) == buf_len and stats.frames_received % int(args.fps) == 0:
+            # Try to decode once per ~second of capture, as long as we have a few
+            # seconds of data. Early/empty attempts fail harmlessly; we suppress
+            # their errors (they would flood the console) and instead print a
+            # periodic "listening" heartbeat so the user sees it is alive.
+            if (len(signal_buf) >= int(args.fps) * 4
+                    and stats.frames_received % int(max(1, args.fps)) == 0):
                 signal, decode_fs = _resample_uniform(
                     signal_buf, ts_buf, fallback_fs=args.fps,
                     live=not args.input,
                 )
-                result = dsp.decode_signal(signal, fs=decode_fs, bit_rate=5.0)
+                result = dsp.decode_signal(signal, fs=decode_fs, bit_rate=args.bit_rate)
                 if result.crc_ok:
                     stats.frames_ok += 1
                     stats.total_frames_attempted += 1
                     stats.total_payload_bytes += len(result.payload or b"")
                     text = (result.payload or b"").decode("ascii", errors="replace")
-                    print(
-                        f"[OK ] '{text}'  ok={stats.frames_ok}  "
-                        f"BER~{stats.ber*100:.1f}%"
-                    )
+                    print(f"[OK ] '{text}'  ok={stats.frames_ok}  BER~{stats.ber*100:.1f}%")
                     signal_buf.clear()
-                elif result.error and "preamble not found" not in result.error:
+                    ts_buf.clear()
+                elif result.error and result.error.startswith("CRC mismatch"):
+                    # Only a real corrupted frame counts toward BER. Partial reads
+                    # while the buffer fills ("truncated", "STX not found", ...)
+                    # are not transmission errors and must not inflate the stat.
                     stats.frames_bad_crc += 1
                     stats.total_frames_attempted += 1
-                    print(
-                        f"[ERR] {result.error}  bad_crc={stats.frames_bad_crc}  "
-                        f"BER~{stats.ber*100:.1f}%"
-                    )
+
+            if last_status is None:
+                last_status = now_t
+            elif now_t - last_status >= 8.0:
+                last_status = now_t
+                span = (ts_buf[-1] - ts_buf[0]) if len(ts_buf) >= 2 else 0.0
+                print(
+                    f"... ouvindo  fps~{fs_eff:.1f}  buffer~{span:.0f}s  "
+                    f"ok={stats.frames_ok}  tentativas={stats.total_frames_attempted}"
+                )
 
             stats.frames_received += 1
     finally:
