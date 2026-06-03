@@ -82,8 +82,11 @@ def audio_to_notes(audio: np.ndarray, fs: float = SAMPLE_RATE,
     windows = [audio[max(0, s + hop - win): s + hop]
                for s in range(0, audio.size - hop + 1, hop)]
     if silence_rms is None:
-        peak = max((float(np.sqrt(np.mean(w ** 2))) for w in windows), default=0.0)
-        silence_rms = max(SILENCE_FLOOR, SILENCE_FACTOR * peak)
+        rmss = [float(np.sqrt(np.mean(w ** 2))) for w in windows if w.size]
+        # Use a high percentile (not the max) as the "loud" reference, so a
+        # single loud transient can't raise the bar and silence real notes.
+        loud = float(np.percentile(rmss, 85)) if rmss else 0.0
+        silence_rms = max(SILENCE_FLOOR, SILENCE_FACTOR * loud)
 
     pitches = [detect_window(w, fs, silence_rms) for w in windows]
     pitches = _median_smooth(pitches, SMOOTH_K)

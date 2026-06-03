@@ -1,4 +1,3 @@
-# src/audio_rx.py
 """RX side: decode payloads from light (etapa 1), turn them into a melody, play it.
 
 Usage:

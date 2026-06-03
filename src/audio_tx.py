@@ -1,8 +1,8 @@
-# src/audio_tx.py
-"""TX side: record the mic, detect the melody, send the notes over the LED.
+"""TX side: get a melody (from the mic or a WAV file), send the notes over the LED.
 
 Usage:
-  python -m src.audio_tx --port COM4 --seconds 5
+  python -m src.audio_tx --port COM4 --seconds 5        # from the microphone
+  python -m src.audio_tx --port COM4 --file test_tone.wav  # from a clean WAV
 The receiver must run with the matching bit rate (the firmware is 2.5 bps):
   python -m src.audio_rx --mode white --bit-rate 2.5 --exposure -6 --buffer-seconds 140
 """
@@ -14,6 +14,7 @@ import sys
 import numpy as np
 
 from src import frame
+from src.audio_io import read_wav
 from src.audio_rx import _describe
 from src.note_codec import encode
 from src.pitch_detect import SAMPLE_RATE, audio_to_notes
@@ -41,13 +42,14 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="LiFi audio TX (mic -> notes -> LED)")
     ap.add_argument("--port", required=True, help="Serial port (e.g. COM4)")
     ap.add_argument("--seconds", type=float, default=5.0)
+    ap.add_argument("--file", help="Read a WAV instead of the mic (reliable demo).")
     ap.add_argument("--max-notes", type=int, default=6,
                     help="Cap the melody length (the link is slow ~2.5 bps). "
                          "6 notes fit the recommended RX --buffer-seconds 140; "
                          "raise both together for longer melodies.")
     args = ap.parse_args(argv)
 
-    audio = record(args.seconds)
+    audio = read_wav(args.file, SAMPLE_RATE) if args.file else record(args.seconds)
     notes = audio_to_notes(audio, SAMPLE_RATE)[: args.max_notes]
     if not notes:
         print("Nenhuma nota detectada (silêncio?). Tente de novo.", file=sys.stderr)
