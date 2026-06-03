@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import collections
 import sys
+import time
 from dataclasses import dataclass
 
 import cv2
@@ -55,8 +56,13 @@ def main(argv: list[str] | None = None) -> int:
 
     buf_len = int(args.buffer_seconds * args.fps)
     signal_buf: collections.deque[float] = collections.deque(maxlen=buf_len)
+    # Wall-clock timestamp per sample. The display loop is usually slower than
+    # the nominal --fps, and the decoder's bit timing depends on the REAL rate,
+    # so we measure it from these timestamps instead of trusting args.fps.
+    ts_buf: collections.deque[float] = collections.deque(maxlen=buf_len)
     tracker = cv_pipeline.ROITracker(smoothing_window=10)
     stats = RxStats()
+    fs_eff = args.fps
 
     if not args.no_gui:
         cv2.namedWindow("LiFi RX — raw", cv2.WINDOW_NORMAL)
@@ -73,6 +79,12 @@ def main(argv: list[str] | None = None) -> int:
             roi = tracker.update(roi)
             intensity = cv_pipeline.extract_intensity(frame_bgr, roi) if roi else 0.0
             signal_buf.append(intensity)
+            # Only a LIVE camera samples in real time; a video file is read as
+            # fast as the CPU allows, so wall-clock would misreport its fps.
+            if not args.input:
+                ts_buf.append(time.monotonic())
+                if len(ts_buf) >= 2 and (ts_buf[-1] - ts_buf[0]) > 0:
+                    fs_eff = (len(ts_buf) - 1) / (ts_buf[-1] - ts_buf[0])
 
             if not args.no_gui:
                 display = frame_bgr.copy()
@@ -81,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
                     cv2.rectangle(display, (x, y), (x + w, y + h), (0, 0, 255), 2)
                 cv2.putText(
                     display,
-                    f"mode={args.mode}  ok={stats.frames_ok}  "
+                    f"mode={args.mode}  fps~{fs_eff:.1f}  ok={stats.frames_ok}  "
                     f"bad={stats.frames_bad_crc}  BER~{stats.ber*100:.1f}%",
                     (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                     (0, 255, 0), 2, cv2.LINE_AA,
@@ -94,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
 
             if len(signal_buf) == buf_len and stats.frames_received % int(args.fps) == 0:
                 signal = np.asarray(signal_buf, dtype=float)
-                result = dsp.decode_signal(signal, fs=args.fps, bit_rate=5.0)
+                result = dsp.decode_signal(signal, fs=fs_eff, bit_rate=5.0)
                 if result.crc_ok:
                     stats.frames_ok += 1
                     stats.total_frames_attempted += 1
