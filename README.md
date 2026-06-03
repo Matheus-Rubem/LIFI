@@ -90,3 +90,21 @@ Notas das condições reais:
   transmissão. Mensagens > ~7 caracteres exigem `--buffer-seconds` maior.
 - O receptor mede o **fps real** quadro a quadro e **reamostra o sinal para uma
   grade de tempo uniforme** antes de decodificar, tolerando o fps variável da webcam.
+
+## Etapa 2 — melodia por luz (áudio)
+
+Transmite uma melodia curta pelo mesmo canal de luz: microfone → notas
+(banco de Goertzel) → LED → câmera → síntese → alto-falante. Detalhes em
+`docs/superpowers/specs/2026-06-03-audio-por-luz-design.md`.
+
+```
+# RX (recebe e toca a melodia)
+python -m src.audio_rx --mode white --bit-rate 2.5 --exposure -6 --buffer-seconds 140
+
+# TX (grava do microfone e transmite)
+python -m src.audio_tx --port COM4 --seconds 5
+```
+
+O receptor precisa do `--bit-rate 2.5` (casa com o firmware). Cada nota leva
+~8 s no canal lento, então use melodias de ~6–8 notas. Checklist de hardware:
+`docs/HARDWARE_VERIFICATION_AUDIO.md`.
