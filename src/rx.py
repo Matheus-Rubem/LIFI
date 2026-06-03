@@ -36,7 +36,7 @@ class RxStats:
         return self.frames_bad_crc / self.total_frames_attempted
 
 
-def main(argv: list[str] | None = None) -> int:
+def _parse_args(argv: list[str] | None = None):
     ap = argparse.ArgumentParser(description="LiFi RX (webcam + OpenCV + DSP)")
     ap.add_argument("--mode", choices=list(cv_pipeline.MODES), default="color")
     ap.add_argument("--camera", type=int, default=0)
@@ -60,12 +60,18 @@ def main(argv: list[str] | None = None) -> int:
                     help="Render the GUI windows every Nth frame. Sampling still "
                          "happens every frame; this only lightens the display so "
                          "the capture loop keeps a higher fps. Raise it if fps is low.")
-    args = ap.parse_args(argv)
+    return ap.parse_args(argv)
 
+
+def decoded_payloads(args):
+    """Run the capture/decode loop, yielding each successfully decoded payload.
+
+    Same side effects as the old main() (prints [OK], heartbeats, summary).
+    """
     cap = cv2.VideoCapture(args.input if args.input else args.camera)
     if not cap.isOpened():
         print("error: cannot open video source", file=sys.stderr)
-        return 2
+        return
     if not args.input:
         # More frames per 200 ms bit = more reliable decode. Decoding needs
         # roughly >=4 samples/bit, i.e. >=20 fps at 5 bps. Best-effort: the
@@ -158,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"[OK ] '{text}'  ok={stats.frames_ok}  BER~{stats.ber*100:.1f}%")
                     signal_buf.clear()
                     ts_buf.clear()
+                    yield result.payload
                 elif result.error and result.error.startswith("CRC mismatch"):
                     # Only a real corrupted frame counts toward BER. Partial reads
                     # while the buffer fills ("truncated", "STX not found", ...)
@@ -186,6 +193,12 @@ def main(argv: list[str] | None = None) -> int:
         f"summary: received={stats.frames_received} ok={stats.frames_ok} "
         f"bad_crc={stats.frames_bad_crc} bytes={stats.total_payload_bytes}"
     )
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+    for _ in decoded_payloads(args):
+        pass
     return 0
 
 
