@@ -79,6 +79,8 @@ def main(argv: list[str] | None = None) -> int:
     stats = RxStats()
     fs_eff = args.fps
     last_status: float | None = None
+    last_diag = "(nenhuma tentativa)"
+    preamble_hits = 0
 
     if not args.no_gui:
         cv2.namedWindow("LiFi RX — raw", cv2.WINDOW_NORMAL)
@@ -135,6 +137,9 @@ def main(argv: list[str] | None = None) -> int:
                     live=not args.input,
                 )
                 result = dsp.decode_signal(signal, fs=decode_fs, bit_rate=args.bit_rate)
+                last_diag = result.error or "OK"
+                if result.preamble_start is not None:
+                    preamble_hits += 1
                 if result.crc_ok:
                     stats.frames_ok += 1
                     stats.total_frames_attempted += 1
@@ -157,7 +162,8 @@ def main(argv: list[str] | None = None) -> int:
                 span = (ts_buf[-1] - ts_buf[0]) if len(ts_buf) >= 2 else 0.0
                 print(
                     f"... ouvindo  fps~{fs_eff:.1f}  buffer~{span:.0f}s  "
-                    f"ok={stats.frames_ok}  tentativas={stats.total_frames_attempted}"
+                    f"ok={stats.frames_ok}  preambulos={preamble_hits}  "
+                    f"ultimo=[{last_diag}]"
                 )
 
             stats.frames_received += 1
