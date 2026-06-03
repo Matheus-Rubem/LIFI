@@ -1,4 +1,3 @@
-# src/audio_synth.py
 """Synthesize a list of Notes into a float audio waveform (the DAC stage)."""
 from __future__ import annotations
 

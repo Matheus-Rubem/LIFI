@@ -92,7 +92,9 @@ como pausa.
    - **Silêncio:** se a energia máxima ficar abaixo de um limiar (relativo ao
      piso de ruído da gravação), a janela é classificada como pausa.
 4. **Segmentação:** junta janelas consecutivas de mesma nota numa única nota,
-   somando as durações. Descarta notas com duração < **100 ms** (anti-blip).
+   somando as durações. Descarta notas com duração < **150 ms** (anti-blip;
+   o limiar é 3 passos de 50 ms porque a janela de análise de 125 ms estende
+   um blip de 50 ms por ~2 passos).
 5. **Codificação:** `note_codec.encode(notas)` → payload de bytes.
 6. **Envio:** monta o quadro com `frame.build_frame(payload)` e escreve no
    serial (`--port`), reusando a lógica da etapa 1. **Não altera `tx.py`.**

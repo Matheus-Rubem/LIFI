@@ -1,4 +1,3 @@
-# src/note_codec.py
 """Codec for a melody as a list of notes <-> bytes (the payload contract).
 
 Each note is 2 bytes: [pitch][steps].

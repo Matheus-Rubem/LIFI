@@ -1,4 +1,3 @@
-# src/pitch_detect.py
 """Pitch detection via a bank of Goertzel filters (one per musical note).
 
 Goertzel computes the power at a single frequency with a 2nd-order IIR filter —
@@ -30,8 +29,6 @@ def goertzel_power(samples: np.ndarray, freq: float, fs: float) -> float:
         s1 = s0
     return float(s1 * s1 + s2 * s2 - coeff * s1 * s2)
 
-
-# src/pitch_detect.py (append)
 _CANDIDATES = list(range(MIDI_MIN, MIDI_MAX + 1))
 _FREQS = {m: midi_to_freq(m) for m in _CANDIDATES}
 
@@ -80,7 +77,8 @@ def audio_to_notes(audio: np.ndarray, fs: float = SAMPLE_RATE,
             run_pitch, run_len = p, 1
     notes.append(Note(run_pitch, run_len))
 
-    # Drop blips (too-short non-rest notes) and merge neighbours if a blip
-    # sat between two equal notes would over-split; keep it simple: just drop.
+    # Drop blips: non-rest notes shorter than MIN_NOTE_STEPS. (A blip between
+    # two equal notes splits them rather than merging — acceptable here; the
+    # melody is expected to use distinct, sustained notes.)
     kept = [n for n in notes if n.pitch == REST or n.steps >= MIN_NOTE_STEPS]
     return kept
