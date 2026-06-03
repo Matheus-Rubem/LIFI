@@ -47,12 +47,22 @@ def main(argv: list[str] | None = None) -> int:
                          "enough for preamble + ~5-byte frame. Increase for "
                          "longer payloads.")
     ap.add_argument("--no-gui", action="store_true", help="Console only (for CI/tests)")
+    ap.add_argument("--display-every", type=int, default=3,
+                    help="Render the GUI windows every Nth frame. Sampling still "
+                         "happens every frame; this only lightens the display so "
+                         "the capture loop keeps a higher fps. Raise it if fps is low.")
     args = ap.parse_args(argv)
 
     cap = cv2.VideoCapture(args.input if args.input else args.camera)
     if not cap.isOpened():
         print("error: cannot open video source", file=sys.stderr)
         return 2
+    if not args.input:
+        # More frames per 200 ms bit = more reliable decode. Decoding needs
+        # roughly >=4 samples/bit, i.e. >=20 fps at 5 bps. Best-effort: the
+        # webcam may ignore these (and dark rooms drop fps via long exposure).
+        cap.set(cv2.CAP_PROP_FPS, 30)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     buf_len = int(args.buffer_seconds * args.fps)
     signal_buf: collections.deque[float] = collections.deque(maxlen=buf_len)
@@ -86,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
                 if len(ts_buf) >= 2 and (ts_buf[-1] - ts_buf[0]) > 0:
                     fs_eff = (len(ts_buf) - 1) / (ts_buf[-1] - ts_buf[0])
 
-            if not args.no_gui:
+            if not args.no_gui and stats.frames_received % max(1, args.display_every) == 0:
                 display = frame_bgr.copy()
                 if roi:
                     x, y, w, h = roi

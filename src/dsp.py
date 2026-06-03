@@ -56,13 +56,14 @@ def find_preamble(
         return None
 
     def _build_ref(invert: bool) -> np.ndarray:
-        ref_bits = []
-        for i in range(int(window_frames / samples_per_bit) + 1):
-            val = 1 if i % 2 == 0 else -1
-            if invert:
-                val = -val
-            ref_bits.append(val)
-        ref = np.repeat(ref_bits, int(round(samples_per_bit)))[:window_frames].astype(float)
+        # Build the reference at sample resolution so its length is exactly
+        # window_frames, even when samples_per_bit is non-integer (e.g. a
+        # webcam at 17 fps -> 3.4 samples/bit). The old bit-repeat approach
+        # could yield a shorter array and break np.dot against the window.
+        bit_idx = (np.arange(window_frames) / samples_per_bit).astype(int)
+        ref = np.where(bit_idx % 2 == 0, 1.0, -1.0)
+        if invert:
+            ref = -ref
         ref -= ref.mean()
         ref /= np.linalg.norm(ref) + 1e-12
         return ref
