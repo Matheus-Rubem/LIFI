@@ -6,8 +6,12 @@ validate mic + pitch detection + synthesis before the full light pipeline.
 
 Run:  python scripts/audio_selftest.py [seconds]
 """
+import os
 import sys
 import time
+
+# Make the project root importable when run as `python scripts/audio_selftest.py`.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import sounddevice as sd
 
