@@ -98,20 +98,65 @@ def extract_intensity(
 
 
 class ROITracker:
-    """Smooth centroid jitter over a sliding window of recent ROIs."""
+    """Lock the ROI onto the light source and HOLD it while the source blinks.
 
-    def __init__(self, smoothing_window: int = 10) -> None:
+    A blinking LED disappears from the mask on every '0' bit. Without a lock the
+    ROI would jump to whatever else is bright (the room-lit breadboard), so the
+    extracted intensity would never drop and the signal would not modulate. So we
+    lock onto the first source found and keep that position; candidate blobs that
+    jump FAR away (background appearing while the LED is dark) are ignored and the
+    lock is held. Only a far blob that PERSISTS re-acquires the lock (the camera
+    or LED actually moved). Nearby candidates still smooth out centroid jitter.
+    """
+
+    def __init__(
+        self,
+        smoothing_window: int = 10,
+        max_jump: int = 60,
+        reacquire_frames: int = 250,
+    ) -> None:
         self._history: deque[tuple[int, int, int, int]] = deque(maxlen=smoothing_window)
+        self._locked: tuple[int, int, int, int] | None = None
+        self._max_jump = max_jump
+        self._reacquire_frames = reacquire_frames
+        self._far_count = 0
+
+    @staticmethod
+    def _center(roi: tuple[int, int, int, int]) -> tuple[float, float]:
+        x, y, w, h = roi
+        return (x + w / 2.0, y + h / 2.0)
 
     def update(
         self, roi: tuple[int, int, int, int] | None
     ) -> tuple[int, int, int, int] | None:
+        # No blob this frame (LED dark, nothing bright): hold the lock.
         if roi is None:
-            if not self._history:
-                return None
-            return self._smoothed()
-        self._history.append(roi)
-        return self._smoothed()
+            return self._locked
+        # First acquisition.
+        if self._locked is None:
+            self._locked = roi
+            self._history.clear()
+            self._history.append(roi)
+            self._far_count = 0
+            return self._locked
+
+        lx, ly = self._center(self._locked)
+        cx, cy = self._center(roi)
+        if (cx - lx) ** 2 + (cy - ly) ** 2 <= self._max_jump ** 2:
+            # Near the lock: accept and smooth out jitter.
+            self._far_count = 0
+            self._history.append(roi)
+            self._locked = self._smoothed()
+        else:
+            # Far blob — most likely the background while the LED is off. Hold the
+            # lock so we keep sampling the LED's spot (and capture the dark phase).
+            self._far_count += 1
+            if self._far_count >= self._reacquire_frames:
+                self._locked = roi
+                self._history.clear()
+                self._history.append(roi)
+                self._far_count = 0
+        return self._locked
 
     def _smoothed(self) -> tuple[int, int, int, int]:
         arr = np.array(self._history, dtype=float)
