@@ -14,7 +14,11 @@ SAMPLE_RATE = 8000
 HOP_MS = 50           # time granularity (also the note duration step)
 WINDOW_MS = 125       # analysis window — wide enough to resolve low semitones
 MIN_NOTE_STEPS = 3    # >= 150 ms to drop blips (window bleed extends a 50 ms blip to 2 hops)
-SILENCE_RMS = 0.01    # below this RMS the window is silence
+SILENCE_RMS = 0.01    # default absolute silence floor for detect_window()
+SILENCE_FLOOR = 0.004     # absolute RMS floor (true silence) for the adaptive threshold
+SILENCE_FACTOR = 0.22     # a hop quieter than this fraction of the loudest hop is silence
+OCTAVE_PREFER = 0.4       # prefer the octave-below fundamental if it has >=40% of the winner
+SMOOTH_K = 3              # median-smoothing window over the per-hop pitch track
 
 
 def goertzel_power(samples: np.ndarray, freq: float, fs: float) -> float:
@@ -40,30 +44,49 @@ def detect_window(window: np.ndarray, fs: float = SAMPLE_RATE,
     rms = float(np.sqrt(np.mean(window ** 2))) if window.size else 0.0
     if rms < silence_rms:
         return REST
-    best_m = REST
-    best_p = 0.0
-    for m in _CANDIDATES:
-        p = goertzel_power(window, _FREQS[m], fs)
-        if p > best_p:
-            best_p = p
-            best_m = m
+    powers = {m: goertzel_power(window, _FREQS[m], fs) for m in _CANDIDATES}
+    best_m = max(powers, key=powers.get)
+    # Octave fix: a voice's 2nd harmonic can beat its fundamental. If the note
+    # one octave below also carries strong energy, it is the real fundamental.
+    low = best_m - 12
+    if low in powers and powers[low] >= OCTAVE_PREFER * powers[best_m]:
+        best_m = low
     return best_m
 
 
+def _median_smooth(values: list[int], k: int = SMOOTH_K) -> list[int]:
+    """Median-filter the pitch track to remove single-hop jumps/flickers."""
+    if k <= 1 or len(values) < k:
+        return list(values)
+    half = k // 2
+    out = []
+    for i in range(len(values)):
+        chunk = sorted(values[max(0, i - half): i + half + 1])
+        out.append(chunk[len(chunk) // 2])
+    return out
+
+
 def audio_to_notes(audio: np.ndarray, fs: float = SAMPLE_RATE,
-                   silence_rms: float = SILENCE_RMS) -> list[Note]:
-    """Segment a float audio array ([-1,1]) into a list of Notes."""
+                   silence_rms: float | None = None) -> list[Note]:
+    """Segment a float audio array ([-1,1]) into a list of Notes.
+
+    `silence_rms=None` (default) sets an ADAPTIVE silence threshold relative to
+    the loudest part of the recording, so a quiet mic/hum is still detected.
+    """
     audio = np.asarray(audio, dtype=float)
     hop = int(round(fs * HOP_MS / 1000.0))
     win = int(round(fs * WINDOW_MS / 1000.0))
     if hop <= 0 or audio.size < hop:
         return []
 
-    # Per-hop pitch over a trailing analysis window.
-    pitches: list[int] = []
-    for start in range(0, audio.size - hop + 1, hop):
-        w0 = max(0, start + hop - win)
-        pitches.append(detect_window(audio[w0:start + hop], fs, silence_rms))
+    windows = [audio[max(0, s + hop - win): s + hop]
+               for s in range(0, audio.size - hop + 1, hop)]
+    if silence_rms is None:
+        peak = max((float(np.sqrt(np.mean(w ** 2))) for w in windows), default=0.0)
+        silence_rms = max(SILENCE_FLOOR, SILENCE_FACTOR * peak)
+
+    pitches = [detect_window(w, fs, silence_rms) for w in windows]
+    pitches = _median_smooth(pitches, SMOOTH_K)
 
     # Merge consecutive equal pitches into notes (steps = hop count).
     notes: list[Note] = []

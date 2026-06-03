@@ -11,3 +11,6 @@ assets/videos_gravados/*.mov
 assets/videos_gravados/*.avi
 *.bin
 !scripts/*.sh
+
+# generated audio test tone
+test_tone.wav

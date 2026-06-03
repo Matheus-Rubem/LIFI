@@ -62,6 +62,27 @@ def test_audio_to_notes_drops_blips():
     assert all(n.pitch != 67 for n in notes)
 
 
+def test_octave_preference_picks_fundamental():
+    from src.note_codec import midi_to_freq
+    from src.pitch_detect import detect_window
+    fs = SAMPLE_RATE
+    f0 = midi_to_freq(50)                      # fundamental ~147 Hz
+    n = 1000
+    t = np.arange(n) / fs
+    # 2nd harmonic slightly louder than the fundamental (a voice-like signal):
+    # the bare bank would pick the octave up; the fundamental is still strong.
+    sig = 0.5 * np.sin(2 * np.pi * f0 * t) + 0.6 * np.sin(2 * np.pi * 2 * f0 * t)
+    assert detect_window(sig, fs) == 50        # not 62 (the octave up)
+
+
+def test_adaptive_threshold_detects_a_quiet_tone():
+    from src.note_codec import midi_to_freq
+    fs = SAMPLE_RATE
+    quiet = 0.02 * np.sin(2 * np.pi * midi_to_freq(64) * np.arange(int(0.6 * fs)) / fs)
+    notes = audio_to_notes(quiet, fs)          # silence_rms=None -> adaptive
+    assert any(n.pitch == 64 for n in notes)   # a fixed 0.01 floor would miss it
+
+
 def test_audio_tx_module_imports():
     import src.audio_tx as atx
     assert hasattr(atx, "notes_to_serial")
