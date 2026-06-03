@@ -32,7 +32,8 @@ Seção 2 do *design spec*):
   prontos no canal de saída (serial USB para o Arduino, ou arquivo `.bin`
   para o celular).
 - **Camada física (PHY)** — duas opções intercambiáveis:
-  - Arduino + LED verde/azul, com Timer1 em modo CTC emitindo bits a 5 Hz.
+  - Arduino + LED (verde/azul em modo `color`, ou **branco** em modo `white`),
+    com Timer1 em modo CTC emitindo bits a **2,5 Hz** (ver Seção 5.1).
   - Celular Android, com `tx_phone.sh` no Termux piscando a lanterna via
     `termux-torch`.
 - **HOST-RX (Python + OpenCV, `src/rx.py`)** — pipeline linear:
@@ -55,10 +56,14 @@ Cada byte é emitido com a estrutura clássica de UART:
 
 | Bit | Duração | Nível ótico |
 |-----|---------|-------------|
-| Start | 200 ms | LED apagado (= 0) |
-| Data bit 0 (LSB) | 200 ms | conforme dado |
-| Data bits 1–7 | 200 ms cada | conforme dado |
-| Stop | 200 ms | LED aceso (= 1) |
+| Start | 400 ms | LED apagado (= 0) |
+| Data bit 0 (LSB) | 400 ms | conforme dado |
+| Data bits 1–7 | 400 ms cada | conforme dado |
+| Stop | 400 ms | LED aceso (= 1) |
+
+> A duração de bit foi ajustada de 200 ms (5 bps) para **400 ms (2,5 bps)**
+> durante o *bring-up* (ver Seção 5.1) para dobrar o número de amostras por
+> bit na webcam real.
 
 Convenção: `1 = LED aceso`, `0 = LED apagado`. Estado IDLE = LED aceso.
 
@@ -102,9 +107,13 @@ Dois modos, parametrizados via flag `--mode`:
   comparador de brilho**.
 
 Após a máscara de cor, aplicamos um fechamento morfológico (dilate +
-erode, kernel 3×3) para eliminar cintilações isoladas. A ROI é o maior
-blob da máscara, com centróide suavizado por média móvel temporal
-(10 frames).
+erode, kernel 3×3) para eliminar cintilações isoladas. A ROI é o blob
+**mais brilhante** da máscara (não o maior — numa sala iluminada a
+protoboard branca tem área maior, mas o LED satura em V≈255 e vence no
+brilho). O rastreador **trava** na posição do LED e a segura quando o
+LED apaga (cada bit 0); blobs que pulam para longe — o fundo claro
+durante a fase escura — são ignorados. Sem essa trava, a intensidade
+extraída nunca cairia e o sinal não modularia.
 
 ### 4.2 Sinal 1D
 
@@ -120,6 +129,24 @@ resposta em frequência em `Fs/M = 30/3 = 10 Hz`, o que preserva a
 fundamental do preamble (2.5 Hz) e atenua o ruído de sensor + flicker
 acima de 10 Hz. Equivalente digital de um RC passa-baixa com τ ≈ 100 ms.
 
+### 4.3.1 Taxa de amostragem real e reamostragem uniforme
+
+A webcam **não** entrega 30 fps constantes: a malha de exibição (3 janelas
+OpenCV) e, sobretudo, a **auto-exposição** (que "caça" o brilho do LED
+piscando) fazem o fps oscilar tipicamente entre 8 e 31 fps. Como o
+decodificador pressupõe amostras igualmente espaçadas, o fps variável
+"borra" os bits.
+
+Solução: o RX registra o **timestamp de relógio de cada amostra** e, antes
+de decodificar, **reamostra o sinal para uma grade de tempo uniforme** via
+interpolação linear (`np.interp`). Isso (a) corrige o *jitter* de
+amostragem e (b) eleva a densidade efetiva de amostras por bit. É o
+equivalente digital de um *resampler*/PLL de relógio de amostragem.
+
+Complementarmente, travar a exposição da câmera (`--exposure`) elimina a
+oscilação na origem, fixando o fps em ~30 — o que se mostrou decisivo para
+decodificar mensagens longas (ver Seção 5.2).
+
 ### 4.4 AGC digital
 
 `threshold = (P90 + P10) / 2` computado sobre os frames do preamble.
@@ -128,8 +155,11 @@ digital de um AGC analógico com capacitor e comparador com histerese.
 
 ### 4.5 Recuperação de relógio (4 estados)
 
-1. **Busca**: correlação do sinal filtrado com uma onda quadrada de 2.5 Hz
-   em janelas deslizantes de ~1.6 s. Limiar = 0.85.
+1. **Busca**: correlação do sinal filtrado com uma onda quadrada de 1,25 Hz
+   (a fundamental do preamble a 2,5 bps) em janelas deslizantes de ~3,2 s
+   (8 bits). Limiar = 0.85. A referência é construída na resolução de
+   amostra, casando exatamente o tamanho da janela mesmo com `amostras/bit`
+   fracionário (ex.: 17 fps ⇒ 6,8 amostras/bit).
 2. **Tracking**: `Tb_medido` a partir do espaçamento mediano entre *zero-
    crossings* do preamble — absorve *jitter* do TX.
 3. **Fim de preamble**: detecta a **primeira violação da alternância**
@@ -143,33 +173,56 @@ digital de um AGC analógico com capacitor e comparador com histerese.
 
 ## 5. Resultados
 
-### 5.1 Critério de Nyquist
+### 5.1 Critério de Nyquist e escolha da taxa
 
-- Fs (webcam) = 30 fps
-- Rb (bit rate ótico) = 5 bps
-- Razão Fs/Rb = 6 amostras por bit
-- Margem de Nyquist = `Fs / (2 · Rb) = 3×`
+Projeto inicial (spec): Rb = 5 bps com Fs = 30 fps daria 6 amostras/bit.
+**Na prática**, a webcam real raramente sustenta 30 fps (auto-exposição +
+carga de CPU derrubam para ~15-20 fps), o que reduzia a razão para ~3
+amostras/bit — abaixo do necessário para amostrar no centro com tolerância
+a *jitter*, e o CRC quase nunca fechava.
 
-Cada bit é representado por 6 frames, o que permite amostrar no centro
-com tolerância a *jitter* da câmera. Nenhum ISI observado em testes.
+Decisão de *bring-up*: **reduzir Rb para 2,5 bps** (`OCR1A_VAL = 6249`).
 
-### 5.2 BER por condição
+- Fs (webcam) ≈ 15–30 fps (variável; estabilizada em ~30 com `--exposure`)
+- Rb (bit rate ótico) = **2,5 bps**
+- Razão Fs/Rb = **6 a 12 amostras por bit**
+- Margem de Nyquist = `Fs / (2 · Rb) ≥ 3×` mesmo a 15 fps
 
-_Preencher após rodar `scripts/ber_sweep.py` nos vídeos gravados._
+Trade-off explícito: a 2,5 bps a vazão cai pela metade (cada caractere leva
+~4 s), mas a **confiabilidade** sobe o suficiente para BER 0% em frases
+inteiras. É um exemplo concreto do compromisso vazão × robustez de PCOM.
 
-| Modo  | Condição              | Tentativas | OK | BAD | BER~ |
-|-------|-----------------------|-----------:|---:|----:|-----:|
-| color | sala escura, 30 cm    | –          | –  | –   | –    |
-| color | luz ambiente, 30 cm   | –          | –  | –   | –    |
-| color | luz ambiente, 1 m     | –          | –  | –   | –    |
-| white | sala escura, 30 cm    | –          | –  | –   | –    |
+### 5.2 Resultados medidos (hardware real)
+
+Setup: Arduino Uno + LED branco, webcam de notebook, modo `white`, 2,5 bps,
+`--exposure -6`, sala iluminada.
+
+| Mensagem            | Caracteres | OK? | BER~ |
+|---------------------|-----------:|:---:|-----:|
+| `oi`                | 2          | ✅ (×3) | 0% |
+| `li`                | 2          | ✅  | 0%   |
+| `sou`               | 3          | ✅  | 0%   |
+| `quero ser feliz`   | 16         | ✅  | 0%   |
+
+Observações:
+
+- **Sem `--exposure`**, o fps oscilava 8–31 fps; só mensagens de ~2 caracteres
+  fechavam o CRC, e de forma intermitente (acertos coincidiam com janelas de
+  fps alto). Foi o diagnóstico que motivou travar a exposição.
+- **Com a exposição travada**, o fps fixou em ~30 e mensagens longas
+  (`quero ser feliz`, 16 chars, ~2 min de transmissão) passaram com **BER 0%**.
+- Limite de comprimento ditado pelo buffer: a janela deslizante precisa conter
+  a mensagem inteira (a 2,5 bps, ~16 chars ≈ 116 s ⇒ `--buffer-seconds 140`).
+- O BER reportado conta apenas quadros com preamble localizado e CRC avaliado
+  (falhas de buffer parcial durante o enchimento não inflam a métrica).
 
 ### 5.3 Comparação TX Arduino vs lanterna
 
-_Discutir aqui por que o *clock recovery* com `Tb_medido` compensa o
-*jitter* de OS no celular. Gerar evidência apontando que a BER no modo
-white é aceitável desde que o preamble detectado gere um `Tb_medido`
-próximo do Tb real do TX._
+O *clock recovery* com `Tb_medido` mais a reamostragem por timestamp (Seção
+4.3.1) compensam tanto o *jitter* de OS do celular quanto o fps variável da
+webcam. Em ambos os casos, a chave é o preamble gerar um `Tb_medido` próximo
+do Tb real do TX; com a exposição travada e o LED bem enquadrado, isso é
+consistente e a BER no modo white cai a 0%.
 
 ---
 
@@ -181,6 +234,9 @@ próximo do Tb real do TX._
 | Fs câmera vs Rb | Critério de Nyquist / ausência de ISI |
 | Preamble 0x55 × 4 | Sincronização de símbolo / *clock recovery* |
 | Média móvel M=3 | Filtro FIR passa-baixa |
+| Reamostragem por timestamp p/ grade uniforme | Conversão de taxa de amostragem / *resampler* de relógio |
+| Trava de exposição (fps estável) | Estabilização do amostrador (Fs constante) |
+| ROI travada no LED durante o piscar | Manutenção de sincronismo espacial do canal |
 | Threshold 10/90 | Decisão por limiar / quantização |
 | Modo `color` (HSV matiz + S alta) | Filtro passa-faixa óptico em banda estreita |
 | Modo `white` (V alta + S baixa) | Filtro passa-tudo óptico com comparador de brilho |
@@ -245,12 +301,17 @@ white) sem alteração de protocolo.
 
 ### Limitações conhecidas
 
-- Rb = 5 bps é lento; uma mensagem de 40 caracteres leva ~1 min 36 s.
-- Saturação da câmera pela luz ambiente intensa pode apagar a ROI no
-  modo *white*.
-- *Jitter* do OS no celular tem piso em ~10 ms que o receptor compensa
-  via `Tb_medido`, mas um sistema mais determinístico (app Android
-  nativo) teria BER menor.
+- Rb = 2,5 bps é lento; cada caractere leva ~4 s (uma frase de 16 caracteres
+  ≈ 2 min). É o preço pago pela robustez frente ao fps baixo/variável da webcam.
+- O comprimento máximo da mensagem é limitado pela janela do buffer: a
+  mensagem inteira precisa caber em `--buffer-seconds` (a 2,5 bps, ~16 chars
+  ≈ 116 s ⇒ buffer de 140 s).
+- O fps da webcam é **variável e dependente da iluminação/exposição**; sem
+  travar a exposição, mensagens longas falham. A trava (`--exposure`) é
+  dependente de driver e pode exigir ajuste do valor (-4 a -7).
+- Numa sala muito iluminada, a protoboard branca também passa no filtro
+  *white*; a seleção do blob **mais brilhante** + a **trava de ROI** resolvem,
+  mas um fundo escuro atrás do LED ainda é o ideal.
 
 ---
 

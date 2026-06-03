@@ -16,22 +16,54 @@ pip install -r requirements.txt
 pytest
 ```
 
-## Live demo (mode color, Arduino + LED)
+## Demo ao vivo — comandos que funcionam ⭐
 
-Run as a module so relative imports resolve:
+O TX e o RX rodam **na máquina que tem o Arduino e a webcam** (no nosso
+caso, Windows nativo — a porta COM e a câmera não aparecem no WSL). Use
+**duas janelas** (PowerShell/terminal), cada uma com o venv ativado.
 
-```
-# Terminal 1 (TX): python -m src.tx --port /dev/ttyUSB0
-# Terminal 2 (RX): python -m src.rx --mode color
-```
-
-## Live demo (mode white, phone flashlight via Termux)
+**Janela 1 — RX (recebe pela webcam):**
 
 ```
-# On the notebook: python -m src.tx --out frame.bin
-# Transfer frame.bin to phone (adb push frame.bin /sdcard/)
-# On phone in Termux: bash scripts/tx_phone.sh /sdcard/frame.bin
-# Back on notebook: python -m src.rx --mode white
+python -m src.rx --mode white --bit-rate 2.5 --exposure -6 --buffer-seconds 140
+```
+
+**Janela 2 — TX (envia pro Arduino):**
+
+```
+python -m src.tx --port COM4
+```
+
+…e digite a mensagem + Enter (ex.: `oi`, `sou`, `quero ser feliz`).
+No Linux a porta costuma ser `/dev/ttyUSB0` ou `/dev/ttyACM0` em vez de `COM4`.
+
+### O que cada flag faz (e por que importam)
+
+| Flag | Para quê |
+|------|----------|
+| `--mode white` | LED **branco** (saturado). Use `--mode color` só para LED verde/azul. |
+| `--bit-rate 2.5` | Tem que **casar com o firmware** (`tx.ino` roda a 2,5 bps). Mais amostras por bit ⇒ decodificação confiável mesmo a ~15-30 fps. |
+| `--exposure -6` | **Trava a exposição** da webcam. Sem isso o LED piscando faz o fps oscilar (8↔31) e corrompe mensagens longas. Se a câmera ignorar, tente `-5`, `-7`, `-4`. |
+| `--buffer-seconds 140` | Janela longa o bastante para caber uma frase inteira (a 2,5 bps, ~16 caracteres ≈ 116 s). |
+
+### Receita rápida
+
+1. Grave o `firmware/tx.ino` no Arduino (Arduino IDE → Upload). Fie o LED:
+   **D8 → resistor 220–330 Ω → perna longa do LED → perna curta → GND**.
+2. Sala **iluminada** (mantém o fps alto) e LED apontado pra webcam, ~20–40 cm.
+3. Rode os dois comandos acima. O RX imprime `... ouvindo  fps~... preambulos=...`
+   enquanto escuta, e `[OK ] 'sua mensagem'  BER~0.0%` ao decodificar.
+
+> ⚠️ Só **um** programa por vez pode usar a `COM4`. Feche o Serial Monitor /
+> o `tx.py` antes de **gravar** o firmware, e vice-versa.
+
+## TX alternativo — lanterna do celular (Termux, modo white)
+
+```
+# No notebook: python -m src.tx --out frame.bin
+# Transfira frame.bin pro celular (adb push frame.bin /sdcard/)
+# No celular, no Termux: bash scripts/tx_phone.sh /sdcard/frame.bin
+# De volta no notebook: python -m src.rx --mode white --bit-rate 2.5 --exposure -6
 ```
 
 ## Hardware bring-up
@@ -43,9 +75,18 @@ both modes.
 
 ## Validation results
 
-_Fill in after running the hardware checklist._
+Validado no hardware (Arduino Uno + LED branco + webcam de notebook), modo
+white a 2,5 bps com exposição travada (`--exposure -6`):
 
-| Mode  | TX             | Attempts | OK  | BER~ | Notes |
-|-------|----------------|----------|-----|------|-------|
-| color | Arduino + LED  | -        | -   | -    | TBD   |
-| white | Phone Termux   | -        | -   | -    | TBD   |
+| Modo  | TX            | Mensagens decodificadas               | BER~ | Observações |
+|-------|---------------|---------------------------------------|------|-------------|
+| white | Arduino + LED | `oi` (×3), `li`, `sou`, `quero ser feliz` | 0%   | fps estável ~30 com `--exposure -6`; sala iluminada |
+
+Notas das condições reais:
+- **Sem `--exposure`**, o fps oscilava 8–31 fps e só mensagens curtas (~2 letras)
+  fechavam o CRC. Com a exposição travada, o fps fixou em ~30 e frases inteiras
+  passaram com BER 0%.
+- Cada caractere leva ~4 s a 2,5 bps; `quero ser feliz` (16 chars) ≈ 2 min de
+  transmissão. Mensagens > ~7 caracteres exigem `--buffer-seconds` maior.
+- O receptor mede o **fps real** quadro a quadro e **reamostra o sinal para uma
+  grade de tempo uniforme** antes de decodificar, tolerando o fps variável da webcam.

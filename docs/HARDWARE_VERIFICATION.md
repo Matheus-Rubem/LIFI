@@ -8,6 +8,37 @@ in hand.
 
 ---
 
+## 0. Configuração final que funcionou ⭐ (leia primeiro)
+
+Depois do *bring-up* real, esta é a configuração validada (Arduino Uno + LED
+**branco** + webcam de notebook, no Windows nativo):
+
+```
+# Janela 1 — RX
+python -m src.rx --mode white --bit-rate 2.5 --exposure -6 --buffer-seconds 140
+
+# Janela 2 — TX
+python -m src.tx --port COM4
+# digite: oi   (ou sou, quero ser feliz, ...)
+```
+
+Ajustes descobertos durante o *bring-up* (todos já no código):
+
+- **Bit rate 2,5 bps** (era 5 bps no spec): `tx.ino` agora usa `OCR1A_VAL = 6249`.
+  A 5 bps, uma webcam a ~15-20 fps tinha só ~3 amostras/bit e o CRC quase nunca
+  fechava. A 2,5 bps são ~7-12 amostras/bit. **O `--bit-rate 2.5` do RX precisa
+  casar com o firmware.**
+- **`--exposure -6`**: o LED piscando fazia a auto-exposição da webcam oscilar o
+  fps (8↔31 fps), corrompendo mensagens longas. Travar a exposição fixa o fps em
+  ~30. Se a câmera ignorar `-6`, tente `-5`, `-7`, `-4`.
+- **Reamostragem por timestamp**: o RX mede o fps real e reamostra o sinal para
+  uma grade uniforme antes de decodificar (tolera fps variável).
+- **ROI travada no LED**: o detector trava na posição do LED e segura, em vez de
+  pular para o fundo claro quando o LED apaga (cada bit 0).
+- **LED branco usa `--mode white`** (não `color`). `color` é só para LED verde/azul.
+
+---
+
 ## 1. Arduino + LED bench test (mode color)
 
 **Hardware:** Arduino Uno/Nano, green or blue LED, 220 Ω resistor, jumper wires.
@@ -25,8 +56,8 @@ in hand.
 **First bench check (no RX yet):**
 1. Open the Serial Monitor at 115200 baud, line ending "No line ending".
 2. Type `UUUU` and press Enter (four bytes = `0x55` alternating preamble).
-3. The LED should blink at 2.5 Hz — a clearly visible slow flicker for about 8 seconds
-   (4 bytes × 10 bits × 200 ms each).
+3. The LED should blink at 1.25 Hz — a clearly visible slow flicker for about 16 seconds
+   (4 bytes × 10 bits × 400 ms each, at the 2.5 bps firmware rate).
 4. After blinking stops, LED should remain solid-on (IDLE state).
 
 **If LED stays dark or solid-on during `UUUU`:**
@@ -56,11 +87,11 @@ in hand.
 
 **Run:**
 ```bash
-# Terminal 1: RX
+# Terminal 1: RX  (--bit-rate 2.5 must match the firmware; --exposure stabilizes fps)
 source .venv/bin/activate
-python -m src.rx --mode color
+python -m src.rx --mode color --bit-rate 2.5 --exposure -6
 
-# Terminal 2: TX
+# Terminal 2: TX  (use COM4 on Windows)
 source .venv/bin/activate
 python -m src.tx --port /dev/ttyUSB0
 > OI
@@ -124,12 +155,13 @@ Flashlight should blink for ~20 seconds and print `done (10 bytes)`.
 **Run:**
 ```bash
 # Terminal 1 on notebook
-python -m src.rx --mode white
+python -m src.rx --mode white --bit-rate 2.5 --exposure -6 --buffer-seconds 140
 ```
 
-Point the phone's flashlight at the webcam (30–50 cm, slightly off-axis so it
-doesn't saturate). The three windows should appear; the mask window should
-show a white blob where the flashlight is.
+Point the phone's flashlight (or the Arduino white LED) at the webcam (30–50 cm,
+slightly off-axis so it doesn't saturate). The three windows should appear; the
+mask window should show a white blob on the light, and the red ROI box should
+**lock onto it and hold** even as it blinks.
 
 **Start the phone TX** (from the previous section).
 
