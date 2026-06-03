@@ -89,8 +89,8 @@ como pausa.
    energia em cada uma das 25 frequências-alvo (uma por semitom), usando a
    forma generalizada (avalia exatamente em `f`, sem arredondar para *bin*). A
    nota vencedora é a de maior energia.
-   - **Silêncio:** se a energia máxima ficar abaixo de um limiar (relativo ao
-     piso de ruído da gravação), a janela é classificada como pausa.
+   - **Silêncio:** se o RMS da janela ficar abaixo de um limiar absoluto fixo
+     (`SILENCE_RMS`, exposto como parâmetro), a janela é classificada como pausa.
 4. **Segmentação:** junta janelas consecutivas de mesma nota numa única nota,
    somando as durações. Descarta notas com duração < **150 ms** (anti-blip;
    o limiar é 3 passos de 50 ms porque a janela de análise de 125 ms estende

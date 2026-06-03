@@ -41,8 +41,10 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="LiFi audio TX (mic -> notes -> LED)")
     ap.add_argument("--port", required=True, help="Serial port (e.g. COM4)")
     ap.add_argument("--seconds", type=float, default=5.0)
-    ap.add_argument("--max-notes", type=int, default=8,
-                    help="Cap the melody length (the link is slow ~2.5 bps).")
+    ap.add_argument("--max-notes", type=int, default=6,
+                    help="Cap the melody length (the link is slow ~2.5 bps). "
+                         "6 notes fit the recommended RX --buffer-seconds 140; "
+                         "raise both together for longer melodies.")
     args = ap.parse_args(argv)
 
     audio = record(args.seconds)
