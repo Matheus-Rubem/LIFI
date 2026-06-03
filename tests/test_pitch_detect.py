@@ -60,3 +60,9 @@ def test_audio_to_notes_drops_blips():
     held = _sine(midi_to_freq(60), int(0.5 * fs), fs)
     notes = audio_to_notes(np.concatenate([blip, held]), fs)
     assert all(n.pitch != 67 for n in notes)
+
+
+def test_audio_tx_module_imports():
+    import src.audio_tx as atx
+    assert hasattr(atx, "notes_to_serial")
+    assert hasattr(atx, "main")
