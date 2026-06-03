@@ -115,8 +115,11 @@ def main(argv: list[str] | None = None) -> int:
                     break
 
             if len(signal_buf) == buf_len and stats.frames_received % int(args.fps) == 0:
-                signal = np.asarray(signal_buf, dtype=float)
-                result = dsp.decode_signal(signal, fs=fs_eff, bit_rate=5.0)
+                signal, decode_fs = _resample_uniform(
+                    signal_buf, ts_buf, fallback_fs=args.fps,
+                    live=not args.input,
+                )
+                result = dsp.decode_signal(signal, fs=decode_fs, bit_rate=5.0)
                 if result.crc_ok:
                     stats.frames_ok += 1
                     stats.total_frames_attempted += 1
@@ -146,6 +149,33 @@ def main(argv: list[str] | None = None) -> int:
         f"bad_crc={stats.frames_bad_crc} bytes={stats.total_payload_bytes}"
     )
     return 0
+
+
+def _resample_uniform(
+    signal_buf, ts_buf, fallback_fs: float, live: bool,
+    grid_fs: float = 60.0,
+):
+    """Resample the sampled intensities onto a uniform time grid.
+
+    A webcam's real frame rate drifts (dark scenes lengthen exposure, CPU load
+    varies), so consecutive samples are NOT equally spaced in time. The decoder
+    assumes uniform spacing, so we use the per-sample timestamps to interpolate
+    onto a fixed `grid_fs` Hz grid. This removes timing jitter AND lifts the
+    effective samples-per-bit, both of which the decoder needs.
+
+    For video-file input (not live) timestamps are meaningless, so we return the
+    raw signal at the nominal fps unchanged.
+    """
+    raw = np.asarray(signal_buf, dtype=float)
+    if not live or len(ts_buf) != len(raw):
+        return raw, fallback_fs
+    ts = np.asarray(ts_buf, dtype=float)
+    span = ts[-1] - ts[0]
+    if span <= 0:
+        return raw, fallback_fs
+    n = max(2, int(span * grid_fs))
+    t_uniform = ts[0] + np.arange(n) / grid_fs
+    return np.interp(t_uniform, ts, raw), grid_fs
 
 
 def _draw_signal_plot(signal: list[float], mode_label: str) -> None:
